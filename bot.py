@@ -1,5 +1,8 @@
 import logging
 import re
+import os
+import base64
+import json
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -15,33 +18,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ——— КОНФИГУРАЦИЯ ——————————————————————————————————————
-import os
-import base64
-import json
-
-# Декодируем Google Credentials из переменной окружения
 def get_credentials_path():
+    """Декодируем Google Credentials из переменной окружения и сохраняем во временный файл"""
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
     if not encoded:
         raise RuntimeError("Переменная GOOGLE_CREDS_BASE64 не найдена!")
-
+    
     # Декодируем base64 → JSON
     decoded = base64.b64decode(encoded).decode('utf-8')
     creds = json.loads(decoded)
-
+    
     # Сохраняем временный файл (нужен для Google API)
     temp_path = "temp_google_creds.json"
     with open(temp_path, 'w') as f:
         json.dump(creds, f)
-
+    
     return temp_path
 
 # Используем временный файл
 CREDENTIALS_FILE = get_credentials_path()           # Ключ сервисного аккаунта
-TELEGRAM_TOKEN = 'ВСТАВЬ_ТОКЕН'                 # Токен от @BotFather
-
-PARENT_FOLDER_ID = 'ID_папки_актов'             # Папка "акты"
-TEMP_FOLDER_ID = 'ID_папки_Bot_Temp_Copies'     # Папка для временных копий
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")        # Токен от @BotFather
+PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")    # Папка "акты"
+TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID")        # Папка для временных копий
 ROOT_FOLDER_YEAR = '2025'
 CITY = 'Воронеж'
 
@@ -57,7 +55,6 @@ class GoogleServices:
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
         self.drive = build('drive', 'v3', credentials=creds)
         self.sheets = build('sheets', 'v4', credentials=creds)
-
 
 class FileManager:
     """Работа с файлами и папками на Google Диске"""
@@ -104,7 +101,6 @@ class FileManager:
         except Exception as e:
             logger.error(f"Ошибка удаления временного файла: {e}")
 
-
 class DataSearcher:
     """Поиск данных в Google Таблице"""
     def __init__(self, sheets_service):
@@ -135,7 +131,6 @@ class DataSearcher:
                 results.append(" | ".join(cleaned))
         return results
 
-
 # ——— ОСНОВНОЙ БОТ ————————————————————————————————————
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,7 +142,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `@ваш_бот СН12345`"
     )
 
-
 def extract_sn(query: str) -> str | None:
     """
     Извлекает номер СН из строки (например, СН12345)
@@ -155,7 +149,6 @@ def extract_sn(query: str) -> str | None:
     """
     match = re.search(r'СН[А-Яа-яA-Za-z0-9]+', query, re.IGNORECASE)
     return match.group(0).strip().upper() if match else None
-
 
 async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     """
@@ -239,7 +232,6 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         logger.error(f"Ошибка обработки: {e}", exc_info=True)
         await message.reply_text("❌ Произошла ошибка при поиске данных.")
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка сообщений: команды и упоминания"""
     message = update.message
@@ -264,7 +256,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await handle_query(update, context, query)
 
-
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -278,7 +269,6 @@ def main():
 
     logger.info("🚀 Бот запущен. Поддержка: личка, группы, каналы (при упоминании).")
     app.run_polling()
-
 
 if __name__ == '__main__':
     main()
