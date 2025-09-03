@@ -88,19 +88,22 @@ class FileManager:
             return None
 
     def create_sheets_copy(self, file_id: str, name: str) -> str:
-        """Создать копию Excel как Google Таблицу в TEMP_FOLDER_ID"""
-        metadata = {
-            'name': name,
-            'parents': [TEMP_FOLDER_ID],
-            'mimeType': 'application/vnd.google-apps.spreadsheet'
-        }
-        try:
-            file = self.drive.files().copy(fileId=file_id, body=metadata).execute()
-            logger.info(f"Копия создана: {name} (ID: {file['id']})")
-            return file['id']
-        except Exception as e:
-            logger.error(f"Ошибка копирования: {e}")
-            return None
+    """Создать копию Excel как Google Таблицу в TEMP_FOLDER_ID"""
+    metadata = {
+        'name': name,
+        'parents': [TEMP_FOLDER_ID],
+        'mimeType': 'application/vnd.google-apps.spreadsheet'
+    }
+    try:
+        file = self.drive.files().copy(fileId=file_id, body=metadata).execute()
+        logger.info(f"Копия создана: {name} (ID: {file['id']}) в папке с ID {TEMP_FOLDER_ID}")
+        return file['id']
+    except Exception as e:
+        error_msg = f"Ошибка копирования файла с ID {file_id} в папку с ID {TEMP_FOLDER_ID} с именем '{name}': {e}"
+        logger.error(error_msg)
+        # Можно также добавить в лог traceback для более детальной информации
+        logger.error(traceback.format_exc()) 
+        return None
 
     def safe_delete(self, file_id: str):
         """Удаляет файл, только если он в TEMP_FOLDER_ID"""
@@ -427,13 +430,20 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
             return
         date_str = used_date.strftime("%d.%m.%Y")
         await message.reply_text(f"✅ Файл найден за {date_str}")
+
         # Конвертация в Google Таблицу
         temp_name = f"TEMP_{filename.replace('.xlsm', '')}"
-        logger.debug(f"Создание временной копии файла {file_id} с именем {temp_name}")
+        logger.debug(f"Создание временной копии файла {file_id} с именем {temp_name} в папке {TEMP_FOLDER_ID}")
         spreadsheet_id = fm.create_sheets_copy(file_id, temp_name)
         if not spreadsheet_id:
-            await message.reply_text("❌ Не удалось обработать файл.")
-            return
+            error_message_for_user = (
+                f"❌ Не удалось обработать файл '{filename}'.\n"
+                f"Попытка создания копии с именем '{temp_name}' в папке с ID '{TEMP_FOLDER_ID}' не удалась."
+            )
+            logger.error(f"Не удалось создать временную копию файла {file_id} с именем {temp_name}")
+            await message.reply_text(error_message_for_user)
+        return
+        
         # Чтение данных
         logger.debug(f"Чтение данных из временной таблицы {spreadsheet_id}, лист 'Терминалы!A:Z'")
         rows = ds.read_sheet(spreadsheet_id, "Терминалы!A:Z")
@@ -442,6 +452,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         if not rows:
             await message.reply_text("📋 Лист 'Терминалы' пуст.")
             return
+
         # Поиск по номеру (без приставки СН)
         logger.debug(f"Поиск номера '{number}' в данных")
         results = ds.search_by_number(rows, number)
