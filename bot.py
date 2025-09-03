@@ -414,7 +414,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
     app.add_handler(CommandHandler("s", lambda u, c: handle_query(u, c, ' '.join(c.args) if c.args else '')))
-    app.add_handler(CommandHandler("ы", lambda u, c: handle_query(u, c, ' '.join(c.args) if c.args else '')))
     # Обработчик для неизвестных команд (все команды, кроме зарегистрированных)
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_handler(MessageHandler(
