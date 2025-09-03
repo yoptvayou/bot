@@ -87,7 +87,7 @@ class FileManager:
             logger.debug(f"Файл '{filename}' НЕ найден в папке {folder_id}")
             return None
 
-        def create_sheets_copy(self, file_id: str, name: str) -> str:
+    def create_sheets_copy(self, file_id: str, name: str) -> str:
         """Создать копию Excel как Google Таблицу в TEMP_FOLDER_ID"""
         metadata = {
             'name': name,
@@ -101,9 +101,6 @@ class FileManager:
         except Exception as e:
             error_msg = f"Ошибка копирования файла с ID {file_id} в папку с ID {TEMP_FOLDER_ID} с именем '{name}': {e}"
             logger.error(error_msg)
-            # Можно также добавить в лог traceback для более детальной информации
-            # import traceback
-            # logger.error(traceback.format_exc()) 
             return None
 
     def safe_delete(self, file_id: str):
@@ -360,30 +357,38 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
     if not update.message:
         logger.warning("Получено обновление без сообщения для handle_query")
         return
+
     message = update.message
     number = extract_number(query)
     if not number:
         await message.reply_text("❌ Не указан корректный номер. Пример: `123456`", parse_mode='Markdown')
         return
+
     await message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
+
     try:
         # Инициализация сервисов
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         ds = DataSearcher(gs.sheets)
         
+        # Динамически определяем текущий год
+        current_year = str(datetime.now().year)
+
         # Поиск файла: сегодня или вчера
         today = datetime.now()
         yesterday = today - timedelta(days=1)
         dates_to_try = [today, yesterday]
         file_id = None
         used_date = None
+
         logger.info(f"Начинаю поиск файла для номера: {number}")
         logger.info(f"PARENT_FOLDER_ID (корневая папка '2025'): {PARENT_FOLDER_ID}")
+
         for target_date in dates_to_try:
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
             logger.info(f"Попытка поиска файла: {filename}")
-            
+
             # Начинаем поиск с PARENT_FOLDER_ID (это уже папка "2025")
             root_folder = PARENT_FOLDER_ID
             
@@ -425,10 +430,11 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 break # Файл найден, выходим из цикла
             else:
                 logger.warning(f"Файл '{filename}' не найден в папке с датой (ID: {date_folder})")
-                
+
         if not file_id:
             await message.reply_text("❌ Файл за сегодня или вчера не найден.")
             return
+
         date_str = used_date.strftime("%d.%m.%Y")
         await message.reply_text(f"✅ Файл найден за {date_str}")
 
@@ -443,13 +449,14 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
             )
             logger.error(f"Не удалось создать временную копию файла {file_id} с именем {temp_name}")
             await message.reply_text(error_message_for_user)
-        return
-        
+            return
+
         # Чтение данных
         logger.debug(f"Чтение данных из временной таблицы {spreadsheet_id}, лист 'Терминалы!A:Z'")
         rows = ds.read_sheet(spreadsheet_id, "Терминалы!A:Z")
         logger.debug(f"Удаление временной таблицы {spreadsheet_id}")
         fm.safe_delete(spreadsheet_id)  # Удаляем сразу после чтения
+
         if not rows:
             await message.reply_text("📋 Лист 'Терминалы' пуст.")
             return
@@ -463,7 +470,9 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 response = response[:4090] + "\n..."
         else:
             response = f"❌ Запись с номером `{number}` не найдена."
+
         await message.reply_text(response, parse_mode='Markdown')
+
     except Exception as e:
         logger.error(f"Ошибка обработки: {e}", exc_info=True)
         # Проверка на существование сообщения перед отправкой ошибки
