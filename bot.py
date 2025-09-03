@@ -15,7 +15,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ——— КОНФИГУРАЦИЯ ——————————————————————————————————————
-CREDENTIALS_FILE = 'credentials.json'           # Ключ сервисного аккаунта
+import os
+import base64
+import json
+
+# Декодируем Google Credentials из переменной окружения
+def get_credentials_path():
+    encoded = os.getenv("GOOGLE_CREDS_BASE64")
+    if not encoded:
+        raise RuntimeError("Переменная GOOGLE_CREDS_BASE64 не найдена!")
+
+    # Декодируем base64 → JSON
+    decoded = base64.b64decode(encoded).decode('utf-8')
+    creds = json.loads(decoded)
+
+    # Сохраняем временный файл (нужен для Google API)
+    temp_path = "temp_google_creds.json"
+    with open(temp_path, 'w') as f:
+        json.dump(creds, f)
+
+    return temp_path
+
+# Используем временный файл
+CREDENTIALS_FILE = get_credentials_path()           # Ключ сервисного аккаунта
 TELEGRAM_TOKEN = 'ВСТАВЬ_ТОКЕН'                 # Токен от @BotFather
 
 PARENT_FOLDER_ID = 'ID_папки_актов'             # Папка "акты"
