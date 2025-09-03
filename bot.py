@@ -1,8 +1,10 @@
 import logging
 import re
 import os
+import base64
+import json
 from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
@@ -19,9 +21,6 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ——— КОНФИГУРАЦИЯ ——————————————————————————————————————
-import base64
-import json
-
 # Декодируем Google Credentials из переменной окружения
 def get_credentials_path():
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
@@ -131,110 +130,53 @@ class DataSearcher:
             logger.error(f"Ошибка чтения таблицы: {e}")
             return []
 
-    def search_by_sn(self, rows: list, target_number: str) -> list:
+    def search_by_sn(self, rows: list, target_sn: str) -> list:
         """
-        Ищет строки, где столбец F (индекс 5) содержит 'СН' + target_number (регистронезависимо)
+        Ищет строки, где столбец F (индекс 5) == target_sn (регистронезависимо)
         """
-        target_sn = f"СН{target_number.strip().upper()}"
+        target_sn = target_sn.strip().upper()
         results = []
         for row in rows[1:]:  # Пропускаем заголовок
-            if len(row) > 5:
-                cell_f_value = row[5].strip().upper()
-                # Проверяем, содержит ли ячейка F искомый СН
-                if target_sn in cell_f_value:
-                    # Берём A-Z, убираем пустые
-                    cleaned = [cell.strip() for cell in row[:26] if cell.strip()]
-                    results.append(" | ".join(cleaned))
+            if len(row) > 5 and row[5].strip().upper() == target_sn:
+                # Берём A-Z, убираем пустые
+                cleaned = [cell.strip() for cell in row[:26] if cell.strip()]
+                results.append(" | ".join(cleaned))
         return results
 
 # ——— ОСНОВНОЙ БОТ ————————————————————————————————————
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие (работает в личке и группах) с клавиатурой"""
-    if not update.message:
-        return
+    """Приветствие (работает в личке и группах)"""
+    if update.message: # Проверка на существование сообщения
+        await update.message.reply_text(
+            "🤖 Привет! Я могу найти данные по номеру СН.\n"
+            "Используй:\n"
+            "• `/s СН12345`\n"
+            "• `@ваш_бот СН12345`"
+        )
 
-    keyboard = [
-        [KeyboardButton("/path")],
-        [KeyboardButton("/s"), KeyboardButton("/ы")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик неизвестных команд"""
+    if update.message:
+        help_text = (
+            "Кожаный, я понимаю только следующие команды:\n"
+            "• `/start` - начать работу со мной\n"
+            "• `/s СН12345` - найти данные по номеру СН\n"
+            "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот СН12345`"
+        )
+        await update.message.reply_text(help_text, parse_mode='Markdown')
 
-    await update.message.reply_text(
-        "🤖 Привет! Я могу найти данные по номеру.\n"
-        "Используй кнопки ниже или команды:\n"
-        "• `/s 123456` или `/ы 123456` - поиск по номеру\n"
-        "• `/path` - показать структуру рабочей папки\n"
-        "• `@ваш_бот 123456` - в группах и каналах",
-        reply_markup=reply_markup
-    )
-
-async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает структуру папок рабочей директории"""
-    if not update.message:
-        return
-
-    try:
-        current_dir = os.getcwd()
-        path_info = f"📂 Рабочая директория: `{current_dir}`\n\n"
-
-        # Получаем список файлов и папок
-        try:
-            entries = os.listdir(current_dir)
-            path_info += f"Содержимое ({len(entries)} элементов):\n"
-
-            # Сначала папки
-            folders = sorted([e for e in entries if os.path.isdir(os.path.join(current_dir, e))])
-            files = sorted([e for e in entries if os.path.isfile(os.path.join(current_dir, e))])
-
-            for folder in folders:
-                path_info += f"📁 `{folder}/`\n"
-
-            # Потом файлы
-            for file in files:
-                try:
-                    size = os.path.getsize(os.path.join(current_dir, file))
-                    size_str = f" ({size} байт)" if size < 1024 else f" ({size//1024} Кб)" if size < 1024*1024 else f" ({size//(1024*1024)} Мб)"
-                except:
-                    size_str = ""
-                path_info += f"📄 `{file}`{size_str}\n"
-
-        except PermissionError:
-            path_info += "❌ Нет прав доступа для просмотра содержимого"
-        except Exception as e:
-            path_info += f"❌ Ошибка при получении содержимого: {e}"
-
-        # Отправляем сообщение, разбивая на части если нужно
-        if len(path_info) > 4096:
-            parts = [path_info[i:i+4000] for i in range(0, len(path_info), 4000)] # Оставляем запас
-            for i, part in enumerate(parts):
-                if i == 0:
-                    await update.message.reply_text(part, parse_mode='Markdown')
-                else:
-                    await update.message.reply_text(f"[продолжение]\n{part}", parse_mode='Markdown')
-        else:
-            await update.message.reply_text(path_info, parse_mode='Markdown')
-
-    except Exception as e:
-        logger.error(f"Ошибка в команде /path: {e}")
-        if update.message:
-            await update.message.reply_text("❌ Произошла ошибка при получении структуры папок.")
-
-def extract_number(query: str) -> str | None:
+def extract_sn(query: str) -> str | None:
     """
-    Извлекает номер из строки (например, 123456)
+    Извлекает номер СН из строки (например, СН12345)
+    Возвращает в верхнем регистре или None
     """
-    if not query:
-        return None
-    # Убираем пробелы и проверяем, что остались только цифры
-    clean_query = query.strip()
-    if clean_query.isdigit():
-        return clean_query
-    return None
+    match = re.search(r'СН[А-Яа-яA-Za-z0-9]+', query, re.IGNORECASE)
+    return match.group(0).strip().upper() if match else None
 
 async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     """
-    Общая логика обработки запроса поиска
+    Общая логика обработки запроса
     """
     # Проверка на существование сообщения
     if not update.message:
@@ -242,13 +184,12 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         return
 
     message = update.message
-    number = extract_number(query)
-
-    if not number:
-        await message.reply_text("❌ Не указан корректный номер. Пример: `/s 123456`", parse_mode='Markdown')
+    sn = extract_sn(query)
+    if not sn:
+        await message.reply_text("❌ Не указан номер СН. Пример: `СН12345`", parse_mode='Markdown')
         return
 
-    await message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
+    await message.reply_text(f"🔍 Поиск по номеру: `{sn}`", parse_mode='Markdown')
 
     try:
         # Инициализация сервисов
@@ -263,7 +204,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         file_id = None
         used_date = None
 
-        logger.info(f"Начинаю поиск файла для номера: {number}")
+        logger.info(f"Начинаю поиск файла для СН: {sn}")
         logger.info(f"PARENT_FOLDER_ID: {PARENT_FOLDER_ID}")
 
         for target_date in dates_to_try:
@@ -325,15 +266,15 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
             await message.reply_text("📋 Лист 'Терминалы' пуст.")
             return
 
-        # Поиск по номеру (бот добавит префикс "СН" самостоятельно)
-        logger.debug(f"Поиск номера '{number}' в данных")
-        results = ds.search_by_sn(rows, number)
+        # Поиск
+        logger.debug(f"Поиск СН '{sn}' в данных")
+        results = ds.search_by_sn(rows, sn)
         if results:
-            response = f"✅ Найдено по `{number}`:\n\n" + "\n\n".join(results)
+            response = f"✅ Найдено по `{sn}`:\n\n" + "\n\n".join(results)
             if len(response) > 4096:
                 response = response[:4090] + "\n..."
         else:
-            response = f"❌ Запись с номером `{number}` не найдена."
+            response = f"❌ Запись с `{sn}` не найдена."
 
         await message.reply_text(response, parse_mode='Markdown')
 
@@ -353,27 +294,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username
 
     # Проверяем типы запросов
-    is_command_s = text.startswith(("/s", "/ы"))
-    is_command_path = text == "/path"
+    is_command = text.startswith("/s")
     is_mention = re.match(rf'@{re.escape(bot_username)}\b', text, re.IGNORECASE)
 
-    if is_command_path:
-        await show_path(update, context)
-        return
-    elif is_command_s or is_mention:
-        # Извлекаем запрос
-        if is_command_s:
-            # Разделяем команду и аргументы
-            parts = text.split(' ', 1)
-            query = parts[1] if len(parts) > 1 else ""
-        else: # mention
-            query = re.sub(rf'@{re.escape(bot_username)}\s*', '', text, flags=re.IGNORECASE).strip()
+    if not (is_command or is_mention):
+        # Если это неизвестная команда, отправляем сообщение о поддерживаемых командах
+        if text.startswith('/'):
+            await unknown_command(update, context)
+        return  # Не наше
 
-        await handle_query(update, context, query)
-        return
+    # Извлекаем запрос
+    if is_command:
+        query = ' '.join(context.args) if context.args else ''
     else:
-        # Неизвестная команда или обычное сообщение
-        return
+        query = re.sub(rf'@{re.escape(bot_username)}\s*', '', text, flags=re.IGNORECASE).strip()
+
+    await handle_query(update, context, query)
 
 def main():
     # Проверка обязательных переменных окружения
@@ -388,9 +324,9 @@ def main():
 
     # Обработчики
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("path", show_path))
     app.add_handler(CommandHandler("s", lambda u, c: handle_query(u, c, ' '.join(c.args) if c.args else '')))
-    app.add_handler(CommandHandler("ы", lambda u, c: handle_query(u, c, ' '.join(c.args) if c.args else '')))
+    # Обработчик для неизвестных команд (все команды, кроме зарегистрированных)
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_handler(MessageHandler(
         filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE),
         handle_message
