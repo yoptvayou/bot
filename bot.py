@@ -37,9 +37,9 @@ def get_credentials_path():
 
 # Используем временный файл и переменные окружения
 CREDENTIALS_FILE = get_credentials_path()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Токен от @BotFather
-PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")  # Папка, где лежит "2025"
-TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID")  # Папка для временных копий
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")       # Токен от @BotFather
+PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")   # Папка, где лежит "2025"
+TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID")       # Папка для временных копий
 # ROOT_FOLDER_YEAR теперь формируется динамически
 ROOT_FOLDER_YEAR = str(datetime.now().year)
 CITY = 'Воронеж'
@@ -113,6 +113,22 @@ class FileManager:
                 logger.warning(f"❌ Удаление запрещено (не в TEMP): {file_id}")
         except Exception as e:
             logger.error(f"Ошибка удаления временного файла: {e}")
+            
+    def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> list:
+        """Получить список файлов и папок в указанной папке Google Drive"""
+        try:
+            # Запрос на получение файлов и папок
+            query = f"'{folder_id}' in parents and trashed=false"
+            results = self.drive.files().list(
+                q=query,
+                pageSize=max_results,
+                fields="nextPageToken, files(id, name, mimeType, size)"
+            ).execute()
+            items = results.get('files', [])
+            return items
+        except Exception as e:
+            logger.error(f"Ошибка получения списка файлов из папки {folder_id}: {e}")
+            return []
 
 class DataSearcher:
     """Поиск данных в Google Таблице"""
@@ -131,14 +147,14 @@ class DataSearcher:
             logger.error(f"Ошибка чтения таблицы: {e}")
             return []
 
-    def search_by_sn(self, rows: list, target_sn: str) -> list:
+    def search_by_number(self, rows: list, target_number: str) -> list:
         """
-        Ищет строки, где столбец F (индекс 5) == target_sn (регистронезависимо)
+        Ищет строки, где столбец F (индекс 5) == target_number (регистронезависимо)
         """
-        target_sn = target_sn.strip().upper()
+        target_number = target_number.strip().upper()
         results = []
         for row in rows[1:]:  # Пропускаем заголовок
-            if len(row) > 5 and row[5].strip().upper() == target_sn:
+            if len(row) > 5 and row[5].strip().upper() == target_number:
                 # Берём A-Z, убираем пустые
                 cleaned = [cell.strip() for cell in row[:26] if cell.strip()]
                 results.append(" | ".join(cleaned))
@@ -150,12 +166,91 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие (работает в личке и группах)"""
     if update.message: # Проверка на существование сообщения
         await update.message.reply_text(
-            "🤖 Привет! Я могу найти данные по номеру СН.\n"
+            "🤖 Привет! Я могу найти данные по номеру.\n"
             "Используй:\n"
-            "• `/s СН12345` - поиск по номеру СН\n"
+            "• `/s 123456` - поиск по номеру\n"
+            "• `/path` - показать содержимое корневой папки\n"
             "• `/test ДДММГГ` - тест формирования пути (например, `/test 010125`)\n"
-            "• `@ваш_бот СН12345` - упоминание в группах/каналах"
+            "• `@ваш_бот 123456` - упоминание в группах/каналах"
         )
+
+async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает содержимое каталога на Google Drive по PARENT_FOLDER_ID"""
+    if not update.message:
+        return
+
+    try:
+        await update.message.reply_text("🔍 Получаю содержимое корневой папки на Google Drive...")
+
+        # Инициализация сервисов Google
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+
+        # Начинаем с корневой папки (PARENT_FOLDER_ID)
+        root_folder_id = PARENT_FOLDER_ID
+        # Попробуем получить имя корневой папки
+        try:
+            root_folder_info = gs.drive.files().get(fileId=root_folder_id, fields="name").execute()
+            root_folder_name = root_folder_info.get('name', 'Без названия')
+        except Exception:
+            root_folder_name = 'Неизвестная корневая папка'
+            logger.warning(f"Не удалось получить имя корневой папки с ID {root_folder_id}")
+
+        path_info = f"📂 Корневая папка Google Drive: `{root_folder_name}` (ID: `{root_folder_id}`)\n\n"
+
+        # Получаем список файлов и папок в корневой папке
+        try:
+            items = fm.list_files_in_folder(root_folder_id, max_results=100) # Ограничим для начала
+            if not items:
+                path_info += "Папка пуста или не содержит файлов/папок."
+            else:
+                path_info += f"Содержимое ({len(items)} элементов):\n"
+                
+                # Сначала папки
+                folders = sorted([item for item in items if item.get('mimeType') == 'application/vnd.google-apps.folder'], 
+                                 key=lambda x: x.get('name', '').lower())
+                # Потом файлы
+                files = sorted([item for item in items if item.get('mimeType') != 'application/vnd.google-apps.folder'], 
+                               key=lambda x: x.get('name', '').lower())
+                
+                for folder in folders:
+                    name = folder.get('name', 'Без названия')
+                    fid = folder.get('id', 'N/A')
+                    path_info += f"📁 `{name}/` (ID: `{fid}`)\n"
+                    
+                for file in files:
+                    name = file.get('name', 'Без названия')
+                    fid = file.get('id', 'N/A')
+                    mime_type = file.get('mimeType', 'Неизвестный тип')
+                    size = file.get('size', None)
+                    size_str = f" ({int(size)} байт)" if size and size.isdigit() else ""
+                    path_info += f"📄 `{name}`{size_str} (ID: `{fid}`, Тип: `{mime_type}`)\n"
+                    
+        except Exception as e:
+            path_info += f"❌ Ошибка при получении содержимого корневой папки: {e}\n"
+            logger.error(f"Ошибка при получении содержимого корневой папки {root_folder_id}: {e}")
+
+        # Отправляем сообщение, разбивая на части если нужно
+        if len(path_info) > 4096:
+            # Простое разделение по строкам, если сообщение слишком длинное
+            lines = path_info.split('\n')
+            current_part = ""
+            for line in lines:
+                if len(current_part + line + '\n') > 4000: # Оставляем запас
+                    await update.message.reply_text(current_part, parse_mode='Markdown')
+                    current_part = "Продолжение `/path`:\n" + line + '\n'
+                else:
+                    current_part += line + '\n'
+            if current_part:
+                await update.message.reply_text(current_part, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(path_info, parse_mode='Markdown')
+
+    except Exception as e:
+        error_msg = f"❌ Произошла ошибка при получении структуры папок Google Drive: {e}"
+        logger.error(error_msg, exc_info=True) # Логируем с трассировкой
+        if update.message:
+            await update.message.reply_text(error_msg)
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /test для формирования пути и имени файла по дате"""
@@ -233,19 +328,25 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = (
             "Кожаный, я понимаю только следующие команды:\n"
             "• `/start` - начать работу со мной\n"
-            "• `/s СН12345` - найти данные по номеру СН\n"
+            "• `/s 123456` - найти данные по номеру\n"
+            "• `/path` - показать содержимое корневой папки\n"
             "• `/test ДДММГГ` - тест формирования пути\n"
-            "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот СН12345`"
+            "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
         )
         await update.message.reply_text(help_text, parse_mode='Markdown')
 
-def extract_sn(query: str) -> str | None:
+def extract_number(query: str) -> str | None:
     """
-    Извлекает номер СН из строки (например, СН12345)
-    Возвращает в верхнем регистре или None
+    Извлекает номер из строки (например, 123456)
+    Возвращает строку с номером или None
     """
-    match = re.search(r'СН[А-Яа-яA-Za-z0-9]+', query, re.IGNORECASE)
-    return match.group(0).strip().upper() if match else None
+    if not query:
+        return None
+    # Убираем пробелы и проверяем, что остались только цифры
+    clean_query = query.strip()
+    if clean_query.isdigit():
+        return clean_query
+    return None
 
 async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     """
@@ -257,12 +358,12 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         return
 
     message = update.message
-    sn = extract_sn(query)
-    if not sn:
-        await message.reply_text("❌ Не указан номер СН. Пример: `СН12345`", parse_mode='Markdown')
+    number = extract_number(query)
+    if not number:
+        await message.reply_text("❌ Не указан корректный номер. Пример: `123456`", parse_mode='Markdown')
         return
 
-    await message.reply_text(f"🔍 Поиск по номеру: `{sn}`", parse_mode='Markdown')
+    await message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
 
     try:
         # Инициализация сервисов
@@ -280,7 +381,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         file_id = None
         used_date = None
 
-        logger.info(f"Начинаю поиск файла для СН: {sn}")
+        logger.info(f"Начинаю поиск файла для номера: {number}")
         logger.info(f"PARENT_FOLDER_ID: {PARENT_FOLDER_ID}")
 
         for target_date in dates_to_try:
@@ -359,15 +460,15 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
             await message.reply_text("📋 Лист 'Терминалы' пуст.")
             return
 
-        # Поиск
-        logger.debug(f"Поиск СН '{sn}' в данных")
-        results = ds.search_by_sn(rows, sn)
+        # Поиск по номеру (без приставки СН)
+        logger.debug(f"Поиск номера '{number}' в данных")
+        results = ds.search_by_number(rows, number)
         if results:
-            response = f"✅ Найдено по `{sn}`:\n\n" + "\n\n".join(results)
+            response = f"✅ Найдено по `{number}`:\n\n" + "\n\n".join(results)
             if len(response) > 4096:
                 response = response[:4090] + "\n..."
         else:
-            response = f"❌ Запись с `{sn}` не найдена."
+            response = f"❌ Запись с номером `{number}` не найдена."
 
         await message.reply_text(response, parse_mode='Markdown')
 
@@ -388,10 +489,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Проверяем типы запросов
     is_command_s = text.startswith("/s")
+    is_command_path = text.startswith("/path")
     is_command_test = text.startswith("/test")
     is_mention = re.match(rf'@{re.escape(bot_username)}\b', text, re.IGNORECASE)
 
-    if is_command_test:
+    if is_command_path:
+        await show_path(update, context)
+        return
+    elif is_command_test:
         # Обрабатываем команду /test отдельно
         # Извлекаем аргументы после /test
         command_parts = text.split(' ', 1)
@@ -427,6 +532,7 @@ def main():
 
     # Обработчики
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("path", show_path))
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CommandHandler("s", lambda u, c: handle_query(u, c, ' '.join(c.args) if c.args else '')))
     # Обработчик для неизвестных команд (все команды, кроме зарегистрированных)
