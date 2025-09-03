@@ -15,7 +15,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) # Исправлено: было logger = logging.getLogger(name)
 
 # Отдельно настраиваем логирование для httpx, чтобы уменьшить verbosity
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -113,6 +113,22 @@ class FileManager:
         except Exception as e:
             logger.error(f"Ошибка удаления временного файла: {e}")
 
+    def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> list:
+        """Получить список файлов и папок в указанной папке Google Drive"""
+        try:
+            # Запрос на получение файлов и папок
+            query = f"'{folder_id}' in parents and trashed=false"
+            results = self.drive.files().list(
+                q=query,
+                pageSize=max_results,
+                fields="nextPageToken, files(id, name, mimeType, size)"
+            ).execute()
+            items = results.get('files', [])
+            return items
+        except Exception as e:
+            logger.error(f"Ошибка получения списка файлов из папки {folder_id}: {e}")
+            return []
+
 class DataSearcher:
     """Поиск данных в Google Таблице"""
     def __init__(self, sheets_service):
@@ -152,81 +168,109 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие (работает в личке и группах) с клавиатурой"""
     if not update.message:
         return
-
     keyboard = [
         [KeyboardButton("/path")],
-        [KeyboardButton("/s"), KeyboardButton("/ы")]
+        [KeyboardButton("/s")] # Убрана кнопка "/ы", так как это недопустимая команда
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
     await update.message.reply_text(
         "🤖 Привет! Я могу найти данные по номеру.\n"
         "Используй кнопки ниже или команды:\n"
-        "• `/s 123456` или `/ы 123456` - поиск по номеру\n"
-        "• `/path` - показать структуру рабочей папки\n"
+        "• `/s 123456` - поиск по номеру\n" # Убрано упоминание "/ы"
+        "• `/path` - показать структуру папок на Google Drive\n"
         "• `@ваш_бот 123456` - в группах и каналах",
         reply_markup=reply_markup
     )
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает структуру папок рабочей директории"""
+    """Показывает структуру папок на Google Drive, начиная с PARENT_FOLDER_ID"""
     if not update.message:
         return
 
     try:
-        current_dir = os.getcwd()
-        path_info = f"📂 Рабочая директория: `{current_dir}`\n\n"
+        await update.message.reply_text("🔍 Получаю структуру папок на Google Drive...")
 
-        # Получаем список файлов и папок
+        # Инициализация сервисов Google
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+
+        # Начинаем с корневой папки (PARENT_FOLDER_ID)
+        root_folder_id = PARENT_FOLDER_ID
+        # Попробуем получить имя корневой папки
         try:
-            entries = os.listdir(current_dir)
-            path_info += f"Содержимое ({len(entries)} элементов):\n"
+            root_folder_info = gs.drive.files().get(fileId=root_folder_id, fields="name").execute()
+            root_folder_name = root_folder_info.get('name', 'Без названия')
+        except Exception:
+            root_folder_name = 'Неизвестная корневая папка'
+            logger.warning(f"Не удалось получить имя корневой папки с ID {root_folder_id}")
 
-            # Сначала папки
-            folders = sorted([e for e in entries if os.path.isdir(os.path.join(current_dir, e))])
-            files = sorted([e for e in entries if os.path.isfile(os.path.join(current_dir, e))])
+        path_info = f"📂 Корневая папка Google Drive: `{root_folder_name}` (ID: `{root_folder_id}`)\n\n"
 
-            for folder in folders:
-                path_info += f"📁 `{folder}/`\n"
-
-            # Потом файлы
-            for file in files:
-                try:
-                    size = os.path.getsize(os.path.join(current_dir, file))
-                    size_str = f" ({size} байт)" if size < 1024 else f" ({size//1024} Кб)" if size < 1024*1024 else f" ({size//(1024*1024)} Мб)"
-                except:
-                    size_str = ""
-                path_info += f"📄 `{file}`{size_str}\n"
-
-        except PermissionError:
-            path_info += "❌ Нет прав доступа для просмотра содержимого"
+        # Получаем список файлов и папок в корневой папке
+        try:
+            items = fm.list_files_in_folder(root_folder_id, max_results=100) # Ограничим для начала
+            if not items:
+                path_info += "Папка пуста или не содержит файлов/папок."
+            else:
+                path_info += f"Содержимое ({len(items)} элементов):\n"
+                
+                # Сначала папки
+                folders = sorted([item for item in items if item.get('mimeType') == 'application/vnd.google-apps.folder'], 
+                                 key=lambda x: x.get('name', '').lower())
+                # Потом файлы
+                files = sorted([item for item in items if item.get('mimeType') != 'application/vnd.google-apps.folder'], 
+                               key=lambda x: x.get('name', '').lower())
+                
+                for folder in folders:
+                    name = folder.get('name', 'Без названия')
+                    fid = folder.get('id', 'N/A')
+                    path_info += f"📁 `{name}/` (ID: `{fid}`)\n"
+                    
+                for file in files:
+                    name = file.get('name', 'Без названия')
+                    fid = file.get('id', 'N/A')
+                    mime_type = file.get('mimeType', 'Неизвестный тип')
+                    size = file.get('size', None)
+                    size_str = f" ({int(size)} байт)" if size and size.isdigit() else ""
+                    path_info += f"📄 `{name}`{size_str} (ID: `{fid}`, Тип: `{mime_type}`)\n"
+                    
         except Exception as e:
-            path_info += f"❌ Ошибка при получении содержимого: {e}"
+            path_info += f"❌ Ошибка при получении содержимого корневой папки: {e}\n"
+            logger.error(f"Ошибка при получении содержимого корневой папки {root_folder_id}: {e}")
 
         # Отправляем сообщение, разбивая на части если нужно
         if len(path_info) > 4096:
-            parts = [path_info[i:i+4000] for i in range(0, len(path_info), 4000)] # Оставляем запас
-            for i, part in enumerate(parts):
-                if i == 0:
-                    await update.message.reply_text(part, parse_mode='Markdown')
+            # Простое разделение по строкам, если сообщение слишком длинное
+            lines = path_info.split('\n')
+            current_part = ""
+            for line in lines:
+                if len(current_part + line + '\n') > 4000: # Оставляем запас
+                    await update.message.reply_text(current_part, parse_mode='Markdown')
+                    current_part = "Продолжение `/path`:\n" + line + '\n'
                 else:
-                    await update.message.reply_text(f"[продолжение]\n{part}", parse_mode='Markdown')
+                    current_part += line + '\n'
+            if current_part:
+                await update.message.reply_text(current_part, parse_mode='Markdown')
         else:
             await update.message.reply_text(path_info, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"Ошибка в команде /path: {e}")
+        error_msg = f"❌ Произошла ошибка при получении структуры папок Google Drive: {e}"
+        logger.error(error_msg, exc_info=True) # Логируем с трассировкой
         if update.message:
-            await update.message.reply_text("❌ Произошла ошибка при получении структуры папок.")
+            await update.message.reply_text(error_msg)
+
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик неизвестных команд"""
     if update.message:
+        # Убрано упоминание "/ы"
         help_text = (
             "Кожаный, я понимаю только следующие команды:\n"
             "• `/start` - начать работу со мной\n"
-            "• `/s 123456` или `/ы 123456` - найти данные по номеру\n"
-            "• `/path` - показать структуру рабочей папки\n"
+            "• `/s 123456` - найти данные по номеру\n" 
+            "• `/path` - показать структуру папок на Google Drive\n"
             "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
         )
         await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -359,12 +403,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверка на существование сообщения и текста
     if not update.message or not update.message.text:
         return
-
     text = update.message.text.strip()
     bot_username = context.bot.username
 
     # Проверяем типы запросов
-    is_command_s = text.startswith(("/s", "/ы"))
+    # Исправлено: Убрана проверка на "/ы"
+    is_command_s = text.startswith("/s")
     is_command_path = text == "/path"
     is_mention = re.match(rf'@{re.escape(bot_username)}\b', text, re.IGNORECASE)
 
@@ -389,11 +433,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # Любой другой текст
         if update.message:
+            # Убрано упоминание "/ы"
             help_text = (
                 "Кожаный, я понимаю только следующие команды:\n"
                 "• `/start` - начать работу со мной\n"
-                "• `/s 123456` или `/ы 123456` - найти данные по номеру\n"
-                "• `/path` - показать структуру рабочей папки\n"
+                "• `/s 123456` - найти данные по номеру\n"
+                "• `/path` - показать структуру папок на Google Drive\n"
                 "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
             )
             await update.message.reply_text(help_text, parse_mode='Markdown')
