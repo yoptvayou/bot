@@ -87,23 +87,24 @@ class FileManager:
             logger.debug(f"Файл '{filename}' НЕ найден в папке {folder_id}")
             return None
 
-    def create_sheets_copy(self, file_id: str, name: str) -> str:
-    """Создать копию Excel как Google Таблицу в TEMP_FOLDER_ID"""
-    metadata = {
-        'name': name,
-        'parents': [TEMP_FOLDER_ID],
-        'mimeType': 'application/vnd.google-apps.spreadsheet'
-    }
-    try:
-        file = self.drive.files().copy(fileId=file_id, body=metadata).execute()
-        logger.info(f"Копия создана: {name} (ID: {file['id']}) в папке с ID {TEMP_FOLDER_ID}")
-        return file['id']
-    except Exception as e:
-        error_msg = f"Ошибка копирования файла с ID {file_id} в папку с ID {TEMP_FOLDER_ID} с именем '{name}': {e}"
-        logger.error(error_msg)
-        # Можно также добавить в лог traceback для более детальной информации
-        logger.error(traceback.format_exc()) 
-        return None
+        def create_sheets_copy(self, file_id: str, name: str) -> str:
+        """Создать копию Excel как Google Таблицу в TEMP_FOLDER_ID"""
+        metadata = {
+            'name': name,
+            'parents': [TEMP_FOLDER_ID],
+            'mimeType': 'application/vnd.google-apps.spreadsheet'
+        }
+        try:
+            file = self.drive.files().copy(fileId=file_id, body=metadata).execute()
+            logger.info(f"Копия создана: {name} (ID: {file['id']}) в папке с ID {TEMP_FOLDER_ID}")
+            return file['id']
+        except Exception as e:
+            error_msg = f"Ошибка копирования файла с ID {file_id} в папку с ID {TEMP_FOLDER_ID} с именем '{name}': {e}"
+            logger.error(error_msg)
+            # Можно также добавить в лог traceback для более детальной информации
+            # import traceback
+            # logger.error(traceback.format_exc()) 
+            return None
 
     def safe_delete(self, file_id: str):
         """Удаляет файл, только если он в TEMP_FOLDER_ID"""
