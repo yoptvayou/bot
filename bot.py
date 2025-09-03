@@ -356,54 +356,41 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
     if not update.message:
         logger.warning("Получено обновление без сообщения для handle_query")
         return
-
     message = update.message
     number = extract_number(query)
     if not number:
         await message.reply_text("❌ Не указан корректный номер. Пример: `123456`", parse_mode='Markdown')
         return
-
     await message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
-
     try:
         # Инициализация сервисов
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         ds = DataSearcher(gs.sheets)
         
-        # Динамически определяем текущий год
-        current_year = str(datetime.now().year)
-
         # Поиск файла: сегодня или вчера
         today = datetime.now()
         yesterday = today - timedelta(days=1)
         dates_to_try = [today, yesterday]
         file_id = None
         used_date = None
-
         logger.info(f"Начинаю поиск файла для номера: {number}")
-        logger.info(f"PARENT_FOLDER_ID: {PARENT_FOLDER_ID}")
-
+        logger.info(f"PARENT_FOLDER_ID (корневая папка '2025'): {PARENT_FOLDER_ID}")
         for target_date in dates_to_try:
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
             logger.info(f"Попытка поиска файла: {filename}")
-
-            # Найти папку года (текущий год)
-            logger.debug(f"Поиск папки года '{current_year}' внутри PARENT_FOLDER_ID '{PARENT_FOLDER_ID}'")
-            root_folder = fm.find_folder(PARENT_FOLDER_ID, current_year)
-            if not root_folder:
-                logger.warning(f"Папка года '{current_year}' не найдена в '{PARENT_FOLDER_ID}'")
-                continue
-            logger.debug(f"Папка года найдена: ID={root_folder}")
-
+            
+            # Начинаем поиск с PARENT_FOLDER_ID (это уже папка "2025")
+            root_folder = PARENT_FOLDER_ID
+            
             # Найти папку "акты"
-            logger.debug(f"Поиск папки 'акты' внутри папки года '{root_folder}'")
+            logger.debug(f"Поиск папки 'акты' внутри корневой папки '{root_folder}'")
             acts_folder = fm.find_folder(root_folder, "акты")
             if not acts_folder:
-                logger.warning(f"Папка 'акты' не найдена в папке года (ID: {root_folder})")
+                logger.warning(f"Папка 'акты' не найдена в корневой папке (ID: {root_folder})")
                 continue
             logger.debug(f"Папка 'акты' найдена: ID={acts_folder}")
-
+            
             # Найти папку месяца: "01 - январь"
             month_names = ["январь", "февраль", "март", "апрель", "май", "июнь",
                            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
@@ -415,7 +402,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 logger.warning(f"Папка месяца '{month_folder_name}' не найдена в 'акты' (ID: {acts_folder})")
                 continue
             logger.debug(f"Папка месяца найдена: ID={month_folder}")
-
+            
             # Найти папку с датой: "ДДММГГ"
             date_folder_name = target_date.strftime('%d%m%y')
             logger.debug(f"Поиск папки с датой '{date_folder_name}' внутри папки месяца '{month_folder}'")
@@ -424,7 +411,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 logger.warning(f"Папка с датой '{date_folder_name}' не найдена в папке месяца (ID: {month_folder})")
                 continue
             logger.debug(f"Папка с датой найдена: ID={date_folder}")
-
+            
             # Найти файл в папке с датой
             logger.debug(f"Поиск файла '{filename}' внутри папки с датой '{date_folder}'")
             file_id = fm.find_file(date_folder, filename)
@@ -434,14 +421,12 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 break # Файл найден, выходим из цикла
             else:
                 logger.warning(f"Файл '{filename}' не найден в папке с датой (ID: {date_folder})")
-
+                
         if not file_id:
             await message.reply_text("❌ Файл за сегодня или вчера не найден.")
             return
-
         date_str = used_date.strftime("%d.%m.%Y")
         await message.reply_text(f"✅ Файл найден за {date_str}")
-
         # Конвертация в Google Таблицу
         temp_name = f"TEMP_{filename.replace('.xlsm', '')}"
         logger.debug(f"Создание временной копии файла {file_id} с именем {temp_name}")
@@ -449,17 +434,14 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         if not spreadsheet_id:
             await message.reply_text("❌ Не удалось обработать файл.")
             return
-
         # Чтение данных
         logger.debug(f"Чтение данных из временной таблицы {spreadsheet_id}, лист 'Терминалы!A:Z'")
         rows = ds.read_sheet(spreadsheet_id, "Терминалы!A:Z")
         logger.debug(f"Удаление временной таблицы {spreadsheet_id}")
         fm.safe_delete(spreadsheet_id)  # Удаляем сразу после чтения
-
         if not rows:
             await message.reply_text("📋 Лист 'Терминалы' пуст.")
             return
-
         # Поиск по номеру (без приставки СН)
         logger.debug(f"Поиск номера '{number}' в данных")
         results = ds.search_by_number(rows, number)
@@ -469,9 +451,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 response = response[:4090] + "\n..."
         else:
             response = f"❌ Запись с номером `{number}` не найдена."
-
         await message.reply_text(response, parse_mode='Markdown')
-
     except Exception as e:
         logger.error(f"Ошибка обработки: {e}", exc_info=True)
         # Проверка на существование сообщения перед отправкой ошибки
