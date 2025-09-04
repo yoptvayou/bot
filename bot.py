@@ -43,6 +43,7 @@ ROOT_FOLDER_YEAR: str = ""
 # --- Разрешённые пользователи ---
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
 
+
 def get_credentials_path() -> str:
     """Декодирует Google Credentials из переменной окружения."""
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
@@ -60,6 +61,7 @@ def get_credentials_path() -> str:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
 
+
 def init_config():
     """Инициализация конфигурации."""
     global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR
@@ -68,15 +70,14 @@ def init_config():
     PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
     TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
     ROOT_FOLDER_YEAR = str(datetime.now().year)
-
     if not TELEGRAM_TOKEN or not PARENT_FOLDER_ID:
         missing = []
         if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
         if not PARENT_FOLDER_ID: missing.append("PARENT_FOLDER_ID")
         raise RuntimeError(f"❌ Отсутствуют переменные окружения: {', '.join(missing)}")
-
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
     logger.info(f"📁 Локальный кэш: {os.path.abspath(LOCAL_CACHE_DIR)}")
+
 
 class GoogleServices:
     """Одиночка для Google API."""
@@ -88,6 +89,7 @@ class GoogleServices:
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
+
 
 def extract_number(query: str) -> Optional[str]:
     """
@@ -101,17 +103,16 @@ def extract_number(query: str) -> Optional[str]:
         return clean
     return None
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие."""
     if not update.message:
         return
     user = update.effective_user
     chat_type = update.message.chat.type
-
     if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
         await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
         return
-
     await update.message.reply_text(
         "🤖 Привет! Я могу найти данные по номеру.\n"
         "Используй:\n"
@@ -119,6 +120,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/path` — показать содержимое папки\n"
         "• `@ваш_бот 123456` — упоминание в группе"
     )
+
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать содержимое корневой папки."""
@@ -128,33 +130,31 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
         await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
         return
-
     try:
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         root_id = PARENT_FOLDER_ID
         items = fm.list_files_in_folder(root_id, max_results=100)
-
         text = f"📂 Корневая папка (ID: `{root_id}`)\n"
         if not items:
             text += "Пусто."
         else:
             folders = [i for i in items if i['mimeType'] == 'application/vnd.google-apps.folder']
             files = [i for i in items if i['mimeType'] != 'application/vnd.google-apps.folder']
-
             for f in sorted(folders, key=lambda x: x['name'].lower()):
                 text += f"📁 `{f['name']}/` (ID: `{f['id']}`)\n"
             for f in sorted(files, key=lambda x: x['name'].lower()):
                 size = f" ({f['size']} байт)" if f.get('size') else ""
                 text += f"📄 `{f['name']}`{size} (ID: `{f['id']}`)\n"
-
         await update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"❌ Ошибка /path: {e}")
         await update.message.reply_text("❌ Ошибка при получении папки.")
 
+
 class FileManager:
     """Работа с Google Drive."""
+
     def __init__(self, drive):
         self.drive = drive
 
@@ -209,69 +209,73 @@ class FileManager:
             logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
             return []
 
+
 class LocalDataSearcher:
-    """Поиск в Excel."""
+    """Поиск в Excel с учётом статусов."""
+
     @staticmethod
-def search_by_number(filepath: str, number: str) -> List[str]:
-    number_upper = number.strip().upper()
-    results = []
-    try:
-        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
-        sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
-        if not sheet:
-            logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
+    def search_by_number(filepath: str, number: str) -> List[str]:
+        number_upper = number.strip().upper()
+        results = []
+        try:
+            wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+            sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
+            if not sheet:
+                logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
+                wb.close()
+                return results
+
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if len(row) < 17 or not row[5]:  # Проверяем, что есть хотя бы 17 столбцов и СН (E, индекс 5)
+                    continue
+
+                sn = str(row[5]).strip().upper()
+                if sn != number_upper:
+                    continue
+
+                # Извлекаем нужные поля по индексам (0-based)
+                equipment_type = str(row[4]).strip() if row[4] else "N/A"  # E (5)
+                model = str(row[6]).strip() if row[6] else "N/A"           # G (7)
+                status = str(row[8]).strip() if row[8] else "N/A"          # I (9)
+                issue_status = str(row[9]).strip() if row[9] else ""       # J (10) — "Выдан" или пусто
+                request_num = str(row[7]).strip() if row[7] else "N/A"     # H (8)
+                engineer = str(row[15]).strip() if row[15] else "N/A"      # P (16)
+                issue_date = str(row[16]).strip() if row[16] else "N/A"    # Q (17)
+                storage = str(row[13]).strip() if row[13] else "N/A"       # N (14)
+
+                # Формируем ответ в зависимости от статуса
+                response_parts = [
+                    f"    • Тип оборудования: <code>{equipment_type}</code>",
+                    f"    • Модель оборудования: <code>{model}</code>",
+                    f"    • Статус: <code>{status}</code>"
+                ]
+
+                if status == "На складе":
+                    response_parts.append(f"    • Место хранения: <code>{storage}</code>")
+
+                elif status == "Зарезервировано":
+                    if issue_status == "Выдан":
+                        response_parts.extend([
+                            f"    • Номер заявки: <code>{request_num}</code>",
+                            f"    • Выдан инженеру: <code>{engineer}</code>",
+                            f"    • Дата выдачи: <code>{issue_date}</code>"
+                        ])
+                    # Если не "Выдан", ничего дополнительно не добавляем
+
+                # Для всех остальных статусов — только базовые 3 поля
+
+                result_text = (
+                    f"<b>СН {str(row[5]).strip()}</b>\n"
+                    f"☁️ <b>Информация:</b>\n"
+                    + "\n".join(response_parts)
+                )
+                results.append(result_text)
+
             wb.close()
-            return results
+        except Exception as e:
+            logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}", exc_info=True)
+        return results
 
-        for row in sheet.iter_rows(min_row=2, values_only=True):
-            if len(row) < 17 or not row[5]:  # Проверяем, что есть хотя бы 17 столбцов и СН (столбец 6, индекс 5)
-                continue
-
-            sn = str(row[5]).strip().upper()
-            if sn != number_upper:
-                continue
-
-            # Извлекаем нужные поля по индексам (0-based)
-            equipment_type = str(row[4]).strip() if row[4] else "N/A"  # E (5)
-            model = str(row[6]).strip() if row[6] else "N/A"           # G (7)
-            status = str(row[8]).strip() if row[8] else "N/A"          # I (9)
-            issue_status = str(row[9]).strip() if row[9] else ""       # J (10) — "Выдан" или пусто
-            request_num = str(row[7]).strip() if row[7] else "N/A"     # H (8) — Номер заявки
-            engineer = str(row[15]).strip() if row[15] else "N/A"      # P (16) — Выдан инженеру
-            issue_date = str(row[16]).strip() if row[16] else "N/A"    # Q (17) — Дата выдачи
-            storage = str(row[13]).strip() if row[13] else "N/A"       # N (14) — Место хранения
-
-            # Формируем ответ в зависимости от статуса
-            response_parts = [
-                f"    • Тип оборудования: <code>{equipment_type}</code>",
-                f"    • Модель оборудования: <code>{model}</code>",
-                f"    • Статус: <code>{status}</code>"
-            ]
-
-            if status == "На складе":
-                response_parts.append(f"    • Место хранения: <code>{storage}</code>")
-
-            elif status == "Зарезервировано":
-                if issue_status == "Выдан":
-                    response_parts.extend([
-                        f"    • Номер заявки: <code>{request_num}</code>",
-                        f"    • Выдан инженеру: <code>{engineer}</code>",
-                        f"    • Дата выдачи: <code>{issue_date}</code>"
-                    ])
-                # Если "Зарезервировано", но не "Выдан" — ничего дополнительно не добавляем
-
-            else:
-                # Для всех остальных статусов — только базовые 3 поля (уже добавлены)
-                pass
-
-            # Формируем итоговый текст
-            result_text = "<b>СН " + str(row[5]) + "</b>\n☁️ <b>Информация:</b>\n" + "\n".join(response_parts)
-            results.append(result_text)
-
-        wb.close()
-    except Exception as e:
-        logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}", exc_info=True)
-    return results
 
 async def handle_search(update: Update, query: str):
     """Общая логика поиска."""
@@ -296,7 +300,6 @@ async def handle_search(update: Update, query: str):
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         lds = LocalDataSearcher()
-
         today = datetime.now()
         file_id = None
         used_date = None
@@ -306,7 +309,6 @@ async def handle_search(update: Update, query: str):
             target_date = today - timedelta(days=days_back)
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
 
-            # Путь: PARENT_FOLDER_ID → "акты" → "01 - январь" → "010124" → файл
             acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
             if not acts: continue
 
@@ -331,7 +333,6 @@ async def handle_search(update: Update, query: str):
         # Подготовка локального файла
         local_file = os.path.join(LOCAL_CACHE_DIR, f"cache_{used_date.strftime('%Y%m%d')}.xlsm")
         drive_time = fm.get_file_modified_time(file_id)
-
         if not drive_time:
             await update.message.reply_text("❌ Не удалось получить время файла на Drive.")
             return
@@ -354,40 +355,26 @@ async def handle_search(update: Update, query: str):
             return
 
         # Формирование ответа
-        lines = []
-        for i, r in enumerate(results, 1):
-            line = (
-                f"<b>СН {r['sn']}</b>\n"
-                "☁️ <b>Информация:</b>\n"
-                f"    • Тип терминала: <code>{r['type']}</code>\n"
-                f"    • Модель: <code>{r['model']}</code>\n"
-                f"    • Статус: <code>{r['status']}</code>\n"
-                f"    • Место хранения: <code>{r['storage']}</code>"
-            )
-            if len(results) > 1:
-                line = f"<b>--- Результат {i} ---</b>\n{line}"
-            lines.append(line)
-
-        response = "\n\n".join(lines)
+        response = "\n\n".join(results)
         if len(response) > 4096:
             response = response[:4050] + "\n<i>... (обрезано)</i>"
 
         await update.message.reply_text(response, parse_mode='HTML')
+
     except Exception as e:
         logger.error(f"❌ Ошибка поиска: {e}", exc_info=True)
         await update.message.reply_text("❌ Произошла ошибка при поиске.")
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка всех сообщений."""
     if not update.message or not update.message.text:
         return
-
     text = update.message.text.strip()
     bot_username = context.bot.username.lower()
 
     # Парсим команду /s
     if text.startswith("/s"):
-        # Извлекаем всё после /s
         query = text[2:].strip()
         if not query:
             await update.message.reply_text(
@@ -421,6 +408,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
+
 def main():
     try:
         init_config()
@@ -429,7 +417,6 @@ def main():
         return
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -437,6 +424,7 @@ def main():
 
     logger.info("🚀 Бот запущен.")
     app.run_polling()
+
 
 if __name__ == '__main__':
     main()
