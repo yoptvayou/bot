@@ -12,9 +12,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import io
 import openpyxl
-from openpyxl.worksheet.worksheet import Worksheet
 import warnings
 
 # Подавление предупреждений от openpyxl
@@ -105,51 +103,69 @@ def extract_number(query: str) -> Optional[str]:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие."""
+    """Приветствие — 18+ стиль."""
     if not update.message:
         return
     user = update.effective_user
     chat_type = update.message.chat.type
     if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
-        await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+        await update.message.reply_text(
+            "Ты, блядь, кто такой?\n"
+            "Я с кожаными мешками в личке не общаюсь.\n"
+            "Пошёл нахуй, пока я тебе башку не проломил."
+        )
         return
     await update.message.reply_text(
-        "🤖 Привет! Я могу найти данные по номеру.\n"
-        "Используй:\n"
-        "• `/s 123456` — поиск по номеру\n"
-        "• `/path` — показать содержимое папки\n"
-        "• `@ваш_бот 123456` — упоминание в группе"
+        "🔥 Ну здорово, босс. Я на связи.\n\n"
+        "Ты — один из своих. Остальные — трупы в багажнике.\n\n"
+        "Что умею:\n"
+        "• <code>/s 123456</code> — найти терминал, как в заднице\n"
+        "• <code>/path</code> — посмотреть, где лежат тела\n"
+        "• <code>@ваш_бот 123456</code> — вызвать, как шлюху"
     )
 
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать содержимое корневой папки."""
+    """Показать содержимое папки — 18+ стиль."""
     if not update.message:
         return
     user = update.effective_user
     if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
-        await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+        await update.message.reply_text(
+            "Ты, блядь, кто такой?\n"
+            "Я с кожаными мешками в личке не общаюсь.\n"
+            "Пошёл нахуй, пока я тебе башку не проломил."
+        )
         return
     try:
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         root_id = PARENT_FOLDER_ID
         items = fm.list_files_in_folder(root_id, max_results=100)
-        text = f"📂 Корневая папка (ID: `{root_id}`)\n"
+        text = f"🗂 <b>Папка с дерьмом</b> (ID: <code>{root_id}</code>)\n\n"
         if not items:
-            text += "Пусто."
+            text += "Пусто. Всё сожжено, как и положено."
         else:
             folders = [i for i in items if i['mimeType'] == 'application/vnd.google-apps.folder']
             files = [i for i in items if i['mimeType'] != 'application/vnd.google-apps.folder']
-            for f in sorted(folders, key=lambda x: x['name'].lower()):
-                text += f"📁 `{f['name']}/` (ID: `{f['id']}`)\n"
-            for f in sorted(files, key=lambda x: x['name'].lower()):
-                size = f" ({f['size']} байт)" if f.get('size') else ""
-                text += f"📄 `{f['name']}`{size} (ID: `{f['id']}`)\n"
-        await update.message.reply_text(text, parse_mode='Markdown')
+            if folders:
+                text += "<b>Склады:</b>\n"
+                for f in sorted(folders, key=lambda x: x['name'].lower()):
+                    text += f"📁 <code>{f['name']}/</code>\n"
+                text += "\n"
+            if files:
+                text += "<b>Хлам:</b>\n"
+                for f in sorted(files, key=lambda x: x['name'].lower()):
+                    size = f" ({f['size']} байт)" if f.get('size') else ""
+                    text += f"📄 <code>{f['name']}</code>{size}\n"
+        await update.message.reply_text(text, parse_mode='HTML')
     except Exception as e:
         logger.error(f"❌ Ошибка /path: {e}")
-        await update.message.reply_text("❌ Ошибка при получении папки.")
+        await update.message.reply_text(
+            "Что-то пошло не так.\n"
+            "Либо файлы уплыли, либо кто-то пытается меня сломать.\n"
+            "Плохо заканчивается всегда."
+        )
 
 
 class FileManager:
@@ -211,7 +227,7 @@ class FileManager:
 
 
 class LocalDataSearcher:
-    """Поиск в Excel с учётом статусов."""
+    """Поиск в Excel с учётом статусов — 18+ логика вывода."""
 
     @staticmethod
     def search_by_number(filepath: str, number: str) -> List[str]:
@@ -226,47 +242,45 @@ class LocalDataSearcher:
                 return results
 
             for row in sheet.iter_rows(min_row=2, values_only=True):
-                if len(row) < 17 or not row[5]:  # Проверяем, что есть хотя бы 17 столбцов и СН (E, индекс 5)
+                if len(row) < 17 or not row[5]:
                     continue
 
                 sn = str(row[5]).strip().upper()
                 if sn != number_upper:
                     continue
 
-                # Извлекаем нужные поля по индексам (0-based)
-                equipment_type = str(row[4]).strip() if row[4] else "N/A"  # E (5)
-                model = str(row[6]).strip() if row[6] else "N/A"           # G (7)
-                status = str(row[8]).strip() if row[8] else "N/A"          # I (9)
-                issue_status = str(row[9]).strip() if row[9] else ""       # J (10) — "Выдан" или пусто
-                request_num = str(row[7]).strip() if row[7] else "N/A"     # H (8)
-                engineer = str(row[15]).strip() if row[15] else "N/A"      # P (16)
-                issue_date = str(row[16]).strip() if row[16] else "N/A"    # Q (17)
-                storage = str(row[13]).strip() if row[13] else "N/A"       # N (14)
+                # Поля
+                equipment_type = str(row[4]).strip() if row[4] else "N/A"
+                model = str(row[6]).strip() if row[6] else "N/A"
+                status = str(row[8]).strip() if row[8] else "N/A"
+                issue_status = str(row[9]).strip() if row[9] else ""
+                request_num = str(row[7]).strip() if row[7] else "N/A"
+                engineer = str(row[15]).strip() if row[15] else "N/A"
+                issue_date = str(row[16]).strip() if row[16] else "N/A"
+                storage = str(row[13]).strip() if row[13] else "N/A"
 
-                # Формируем ответ в зависимости от статуса
                 response_parts = [
                     f"    • Тип оборудования: <code>{equipment_type}</code>",
                     f"    • Модель оборудования: <code>{model}</code>",
                     f"    • Статус: <code>{status}</code>"
                 ]
 
-                if status == "На складе":
-                    response_parts.append(f"    • Место хранения: <code>{storage}</code>")
+                # Добавляем "Место на складе" почти везде, кроме "Зарезервировано + Выдан"
+                if not (status == "Зарезервировано" and issue_status == "Выдан"):
+                    if storage != "N/A":
+                        response_parts.append(f"    • Место на складе: <code>{storage}</code>")
 
-                elif status == "Зарезервировано":
-                    if issue_status == "Выдан":
-                        response_parts.extend([
-                            f"    • Номер заявки: <code>{request_num}</code>",
-                            f"    • Выдан инженеру: <code>{engineer}</code>",
-                            f"    • Дата выдачи: <code>{issue_date}</code>"
-                        ])
-                    # Если не "Выдан", ничего дополнительно не добавляем
-
-                # Для всех остальных статусов — только базовые 3 поля
+                # Только если зарезервировано и выдан — показываем выдачу
+                if status == "Зарезервировано" and issue_status == "Выдан":
+                    response_parts.extend([
+                        f"    • Номер заявки: <code>{request_num}</code>",
+                        f"    • Выдан инженеру: <code>{engineer}</code>",
+                        f"    • Дата выдачи: <code>{issue_date}</code>"
+                    ])
 
                 result_text = (
                     f"<b>СН {str(row[5]).strip()}</b>\n"
-                    f"☁️ <b>Информация:</b>\n"
+                    f"🔍 <b>Инфа:</b>\n"
                     + "\n".join(response_parts)
                 )
                 results.append(result_text)
@@ -278,23 +292,29 @@ class LocalDataSearcher:
 
 
 async def handle_search(update: Update, query: str):
-    """Общая логика поиска."""
+    """Общая логика поиска — 18+ ответы."""
     if not update.message:
         return
     user = update.effective_user
     if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
-        await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+        await update.message.reply_text(
+            "Ты, блядь, кто такой?\n"
+            "Я с кожаными мешками в личке не общаюсь.\n"
+            "Пошёл нахуй, пока я тебе башку не проломил."
+        )
         return
 
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
-            "❌ Укажите корректный номер. Пример: `123456` или `AB123456`",
-            parse_mode='Markdown'
+            "Ты, блядь, что вводишь?\n"
+            "Это не номер, это какашка на экране.\n\n"
+            "Давай по-людски: <code>AB123456</code> — и без пробелов, иначе я подумаю, что ты дебил.",
+            parse_mode='HTML'
         )
         return
 
-    await update.message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
+    await update.message.reply_text(f"🔎 Ищу терминал <code>{number}</code>…", parse_mode='HTML')
 
     try:
         gs = GoogleServices()
@@ -304,33 +324,31 @@ async def handle_search(update: Update, query: str):
         file_id = None
         used_date = None
 
-        # Поиск файла за последние 30 дней
         for days_back in range(31):
             target_date = today - timedelta(days=days_back)
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
-
             acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
             if not acts: continue
-
             month_num = target_date.month
             month_name = ["январь", "февраль", "март", "апрель", "май", "июнь",
                           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][month_num - 1]
             month_folder = fm.find_folder(acts, f"{target_date.strftime('%m')} - {month_name}")
             if not month_folder: continue
-
             date_folder = fm.find_folder(month_folder, target_date.strftime('%d%m%y'))
             if not date_folder: continue
-
             file_id = fm.find_file(date_folder, filename)
             if file_id:
                 used_date = target_date
                 break
 
         if not file_id:
-            await update.message.reply_text("Сорян, файл не найден, искать негде.")
+            await update.message.reply_text(
+                "Файл не найден.\n"
+                "Либо его нет, либо кто-то прикрыл.\n"
+                "Завтра — может быть. А сегодня — нет."
+            )
             return
 
-        # Подготовка локального файла
         local_file = os.path.join(LOCAL_CACHE_DIR, f"cache_{used_date.strftime('%Y%m%d')}.xlsm")
         drive_time = fm.get_file_modified_time(file_id)
         if not drive_time:
@@ -345,67 +363,75 @@ async def handle_search(update: Update, query: str):
 
         if download_needed:
             if not fm.download_file(file_id, local_file):
-                await update.message.reply_text("❌ Не удалось скачать файл.")
+                await update.message.reply_text("❌ Не удалось скачать файл. Сеть упала или кто-то всё стёр.")
                 return
 
-        # Поиск в файле
         results = lds.search_by_number(local_file, number)
         if not results:
-            await update.message.reply_text("Кожаный мешок, проверь СН. Я не могу его найти.")
+            await update.message.reply_text(
+                "Ты ищешь призрака?\n"
+                "Такого СН нет ни в базе, ни в аду.\n\n"
+                "Либо ты ошибся, либо кто-то очень старался, чтобы его не нашли.\n"
+                "Выбирай: глупость или заговор."
+            )
             return
 
-        # Формирование ответа
         response = "\n\n".join(results)
         if len(response) > 4096:
-            response = response[:4050] + "\n<i>... (обрезано)</i>"
+            response = response[:4050] + "\n<i>... (обрезано, слишком длинный ответ для одного сообщения)</i>"
 
         await update.message.reply_text(response, parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"❌ Ошибка поиска: {e}", exc_info=True)
-        await update.message.reply_text("❌ Произошла ошибка при поиске.")
+        await update.message.reply_text(
+            "Что-то пошло не по плану.\n"
+            "Может, файл сгорел. Может, я устал.\n"
+            "Или ты просто слишком глуп, чтобы это понять.\n"
+            "Попробуй позже. Или сдохни."
+        )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка всех сообщений."""
+    """Обработка всех сообщений — 18+ стиль."""
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
     bot_username = context.bot.username.lower()
 
-    # Парсим команду /s
     if text.startswith("/s"):
         query = text[2:].strip()
         if not query:
             await update.message.reply_text(
-                "❌ Укажите номер после `/s`. Пример: `/s 123456`",
-                parse_mode='Markdown'
+                "Ты, блядь, команду вводишь или хуйню какую-то?\n"
+                "Пиши: <code>/s 123456</code> — и всё.",
+                parse_mode='HTML'
             )
             return
         await handle_search(update, query)
         return
 
-    # Обработка упоминания
     mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
     if mention_match:
         query = mention_match.group(1).strip()
         if not query:
             await update.message.reply_text(
-                "❌ Укажите номер после упоминания. Пример: `@ваш_бот 123456`",
-                parse_mode='Markdown'
+                "Вызвал — отвечай.\n"
+                "Что искать, блядь? Пиши номер после упоминания.",
+                parse_mode='HTML'
             )
             return
         await handle_search(update, query)
         return
 
-    # Неизвестная команда
     if text.startswith('/'):
         await update.message.reply_text(
-            "Кожаный, я понимаю только:\n"
-            "• `/start`\n"
-            "• `/s 123456`\n"
-            "• `@ваш_бот 123456`",
-            parse_mode='Markdown'
+            "Я не твой личный голосовой помощник, блядь.\n"
+            "Используй:\n"
+            "• <code>/s 123456</code>\n"
+            "• <code>@ваш_бот 123456</code>\n\n"
+            "А если не понял — прочитай дважды. Или иди нахуй.",
+            parse_mode='HTML'
         )
 
 
@@ -415,14 +441,12 @@ def main():
     except Exception as e:
         logger.critical(f"❌ Критическая ошибка: {e}")
         return
-
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_message))  # Для /s
-
-    logger.info("🚀 Бот запущен.")
+    app.add_handler(MessageHandler(filters.COMMAND, handle_message))
+    logger.info("🚀 Бот запущен. Готов к жестокому обращению.")
     app.run_polling()
 
 
