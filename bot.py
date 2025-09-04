@@ -5,7 +5,7 @@ import base64
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import Optional, List, Dict
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google.auth.transport.requests import Request
@@ -17,546 +17,397 @@ import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 import warnings
 
-# Подавить предупреждения от openpyxl о Data Validation
-warnings.filterwarnings("ignore", message="Data Validation extension is not supported and will be removed", category=UserWarning, module="openpyxl.worksheet._reader")
+# Подавление предупреждений от openpyxl
+warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
 
 # --- Настройка логирования ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-# Уменьшаем уровень логов для httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
-# Создаем логгер для нашего приложения
 logger = logging.getLogger(__name__)
 
 # --- Конфигурация ---
 CITY = 'Воронеж'
-SCOPES = [
-    'https://www.googleapis.com/auth/drive'
-]
-# Директория для хранения временных файлов
+SCOPES = ['https://www.googleapis.com/auth/drive']
 LOCAL_CACHE_DIR = "./local_cache"
 
-# --- Глобальные переменные (инициализируются в main) ---
+# --- Глобальные переменные ---
 CREDENTIALS_FILE: str = ""
 TELEGRAM_TOKEN: str = ""
 PARENT_FOLDER_ID: str = ""
 TEMP_FOLDER_ID: str = ""
 ROOT_FOLDER_YEAR: str = ""
 
-# --- Список разрешённых пользователей ---
-ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}  # Используем set для более быстрого поиска
+# --- Разрешённые пользователи ---
+ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
 
 def get_credentials_path() -> str:
-    """Декодирует Google Credentials из переменной окружения и сохраняет во временный файл."""
+    """Декодирует Google Credentials из переменной окружения."""
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
     if not encoded:
-        raise RuntimeError("Переменная GOOGLE_CREDS_BASE64 не найдена!")
+        raise RuntimeError("GOOGLE_CREDS_BASE64 не найдена!")
     try:
         decoded = base64.b64decode(encoded).decode('utf-8')
         creds = json.loads(decoded)
         temp_path = "temp_google_creds.json"
         with open(temp_path, 'w') as f:
             json.dump(creds, f)
-        logger.info(f"✅ Учетные данные Google сохранены во временный файл: {temp_path}")
+        logger.info(f"✅ Учетные данные сохранены: {temp_path}")
         return temp_path
     except Exception as e:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
 
 def init_config():
-    """Инициализирует глобальные переменные конфигурации."""
+    """Инициализация конфигурации."""
     global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR
     CREDENTIALS_FILE = get_credentials_path()
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
     PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
     TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
     ROOT_FOLDER_YEAR = str(datetime.now().year)
-    if not all([TELEGRAM_TOKEN, PARENT_FOLDER_ID]):
-        missing = [k for k, v in {"TELEGRAM_TOKEN": TELEGRAM_TOKEN, "PARENT_FOLDER_ID": PARENT_FOLDER_ID}.items() if not v]
-        raise RuntimeError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing)}")
-    # Создаем директорию для кэша, если её нет
+
+    if not TELEGRAM_TOKEN or not PARENT_FOLDER_ID:
+        missing = []
+        if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
+        if not PARENT_FOLDER_ID: missing.append("PARENT_FOLDER_ID")
+        raise RuntimeError(f"❌ Отсутствуют переменные окружения: {', '.join(missing)}")
+
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
-    logger.info(f"📁 Директория для локального кэша: {os.path.abspath(LOCAL_CACHE_DIR)}")
+    logger.info(f"📁 Локальный кэш: {os.path.abspath(LOCAL_CACHE_DIR)}")
 
 class GoogleServices:
-    """Инкапсуляция Google API сервисов."""
+    """Одиночка для Google API."""
     _instance = None
-    _initialized = False
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if not self._initialized:
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
-            self.drive = build('drive', 'v3', credentials=creds)
-            self._initialized = True
-
-class FileManager:
-    """Работа с файлами и папками на Google Диске."""
-    def __init__(self, drive_service):
-        self.drive = drive_service
-    
-    def find_folder(self, parent_id: str, name: str) -> Optional[str]:
-        """Найти папку по имени."""
-        query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
-        try:
-            result = self.drive.files().list(q=query, fields="files(id, name)").execute()
-            files = result.get('files', [])
-            if files:
-                logger.debug(f"📁 Найдена папка '{name}' (ID: {files[0]['id']}) внутри родителя {parent_id}")
-                return files[0]['id']
-            else:
-                logger.debug(f"📁 Папка '{name}' НЕ найдена внутри родителя {parent_id}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Ошибка поиска папки '{name}' в {parent_id}: {e}")
-            return None
-    
-    def find_file(self, folder_id: str, filename: str) -> Optional[str]:
-        """Найти файл в папке."""
-        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-        try:
-            result = self.drive.files().list(q=query, fields="files(id, name, mimeType)").execute()
-            files = result.get('files', [])
-            if files:
-                file_info = files[0]
-                logger.debug(f"📄 Найден файл '{filename}' (ID: {file_info['id']}) в папке {folder_id}")
-                return file_info['id']
-            else:
-                logger.debug(f"📄 Файл '{filename}' НЕ найден в папке {folder_id}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Ошибка поиска файла '{filename}' в {folder_id}: {e}")
-            return None
-    
-    def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
-        """Получает время последнего изменения файла на Google Drive."""
-        try:
-            file_info = self.drive.files().get(fileId=file_id, fields="modifiedTime").execute()
-            modified_time_str = file_info.get('modifiedTime')
-            if modified_time_str:
-                # Парсим строку времени в объект datetime с временной зоной UTC
-                modified_time = datetime.strptime(modified_time_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-                modified_time = modified_time.replace(tzinfo=timezone.utc)
-                logger.debug(f"🕒 Время изменения файла на Drive {file_id}: {modified_time}")
-                return modified_time
-            else:
-                logger.warning(f"⚠️ Время изменения не найдено для файла {file_id}")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения времени изменения файла {file_id}: {e}")
-            return None
-    
-    def download_file(self, file_id: str, local_filename: str) -> bool:
-        """Скачивает файл с Google Drive в локальный файл."""
-        try:
-            logger.info(f"⬇️ Начинаю скачивание файла {file_id} в {local_filename}")
-            request = self.drive.files().get_media(fileId=file_id)
-            with open(local_filename, 'wb') as fh:
-                downloader = MediaIoBaseDownload(fh, request)
-                done = False
-                while done is False:
-                    status, done = downloader.next_chunk()
-                    progress = int(status.progress() * 100)
-                    logger.debug(f"⬇️ Прогресс скачивания {file_id}: {progress}%")
-            logger.info(f"✅ Файл {file_id} успешно скачан как {local_filename}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Ошибка скачивания файла {file_id} в {local_filename}: {e}")
-            return False
-    
-    def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict[str, Any]]:
-        """Получить список файлов и папок в указанной папке Google Drive."""
-        try:
-            query = f"'{folder_id}' in parents and trashed=false"
-            results = self.drive.files().list(
-                q=query,
-                pageSize=max_results,
-                fields="nextPageToken, files(id, name, mimeType, size)"
-            ).execute()
-            items = results.get('files', [])
-            logger.debug(f"📁 Получен список из {len(items)} элементов из папки {folder_id}")
-            return items
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения списка файлов из папки {folder_id}: {e}")
-            return []
-
-class LocalDataSearcher:
-    """Поиск данных в локальном Excel файле."""
-    @staticmethod
-    def search_by_number(local_filepath: str, target_number: str, sheet_name: str = "Терминалы") -> List[str]:
-        """
-        Ищет строки в локальном .xlsm файле, где столбец F (индекс 5) == target_number (регистронезависимо).
-        Возвращает только нужные столбцы: F, E, G, I, N
-        """
-        logger.info(f"🔍 Начинаю поиск номера '{target_number}' в локальном файле {local_filepath}, лист '{sheet_name}'")
-        target_number_upper = target_number.strip().upper()
-        results = []
-        try:
-            # Открываем книгу Excel
-            workbook = openpyxl.load_workbook(local_filepath, read_only=True, data_only=True)
-            if sheet_name not in workbook.sheetnames:
-                logger.warning(f"⚠️ Лист '{sheet_name}' не найден в файле {local_filepath}. Доступные листы: {workbook.sheetnames}")
-                workbook.close()
-                return results
-            sheet: Worksheet = workbook[sheet_name]
-            logger.debug(f"📄 Обработка листа '{sheet_name}' из файла {local_filepath}")
-            # Предполагаем, что данные начинаются со второй строки (первая - заголовок)
-            for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-                if len(row) > 0:  # Проверяем, что в строке есть хотя бы один столбец
-                    # Исправлено: теперь ищем по столбцу F (индекс 5), регистронезависимо
-                    cell_f_value = str(row[5]).strip().upper() if len(row) > 5 and row[5] is not None else ""
-                    if cell_f_value == target_number_upper:
-                        logger.info(f"🔍 Совпадение найдено в файле '{local_filepath}', лист '{sheet_name}', строка {row_num}")
-                        # Берём только нужные столбцы: F(СН), E(Тип оборудования), G(Модель), I(Статус), N(Место хранения)
-                        sn = str(row[5]).strip() if row[5] is not None else "N/A"
-                        type_terminal = str(row[4]).strip() if row[4] is not None else "N/A"
-                        model = str(row[6]).strip() if row[6] is not None else "N/A"
-                        status = str(row[8]).strip() if row[8] is not None else "N/A"
-                        storage = str(row[13]).strip() if row[13] is not None else "N/A"
-                        # Формируем строку только с нужными данными
-                        result_line = f"F(Серийный номер):'{sn}' | E(Тип оборудования):'{type_terminal}' | G(Модель Терминала):'{model}' | I(Статус):'{status}' | N(Место хранения):'{storage}'"
-                        results.append(result_line)
-            workbook.close()
-            logger.info(f"✅ Поиск завершен. Найдено {len(results)} совпадений.")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при поиске в локальном файле {local_filepath}: {e}", exc_info=True)
-        return results
-
-# --- Команды бота ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Приветствие (работает в личке и группах)."""
-    if update.message:
-        logger.info(f"📤 Отправка приветствия пользователю {update.effective_user.id}")
-        # Проверка, является ли пользователь разрешённым в личке
-        if update.message.chat.type == 'private':
-            username = update.effective_user.username
-            if not username or username not in ALLOWED_USERS:
-                await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
-                return
-        await update.message.reply_text(
-            "🤖 Привет! Я могу найти данные по номеру.\n"
-            "Используй:\n"
-            "• `/s 123456` - поиск по номеру\n"
-            "• `/path` - показать содержимое корневой папки\n"
-            "• `@ваш_бот 123456` - упоминание в группах/каналах"
-        )
-
-async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает содержимое каталога на Google Drive по PARENT_FOLDER_ID."""
-    if not update.message:
-        return
-    user_id = update.effective_user.id
-    # Проверка, является ли пользователь разрешённым в личке
-    if update.message.chat.type == 'private':
-        username = update.effective_user.username
-        if not username or username not in ALLOWED_USERS:
-            await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
-            return
-    logger.info(f"📤 Пользователь {user_id} запросил команду /path")
-    try:
-        await update.message.reply_text("🔍 Получаю содержимое корневой папки на Google Drive...")
-        gs = GoogleServices()
-        fm = FileManager(gs.drive)
-        root_folder_id = PARENT_FOLDER_ID
-        try:
-            root_folder_info = gs.drive.files().get(fileId=root_folder_id, fields="name").execute()
-            root_folder_name = root_folder_info.get('name', 'Без названия')
-        except Exception:
-            root_folder_name = 'Неизвестная корневая папка'
-            logger.warning(f"⚠️ Не удалось получить имя корневой папки с ID {root_folder_id}")
-        path_info = f"📂 Корневая папка Google Drive: `{root_folder_name}` (ID: `{root_folder_id}`)\n"
-        try:
-            items = fm.list_files_in_folder(root_folder_id, max_results=100)
-            if not items:
-                path_info += "Папка пуста или не содержит файлов/папок."
-            else:
-                path_info += f"Содержимое ({len(items)} элементов):\n"
-                folders = sorted([item for item in items if item.get('mimeType') == 'application/vnd.google-apps.folder'],
-                                 key=lambda x: x.get('name', '').lower())
-                files = sorted([item for item in items if item.get('mimeType') != 'application/vnd.google-apps.folder'],
-                               key=lambda x: x.get('name', '').lower())
-                for folder in folders:
-                    name = folder.get('name', 'Без названия')
-                    fid = folder.get('id', 'N/A')
-                    path_info += f"📁 `{name}/` (ID: `{fid}`)\n"
-                for file in files:
-                    name = file.get('name', 'Без названия')
-                    fid = file.get('id', 'N/A')
-                    mime_type = file.get('mimeType', 'Неизвестный тип')
-                    size = file.get('size', None)
-                    size_str = f" ({int(size)} байт)" if size and size.isdigit() else ""
-                    path_info += f"📄 `{name}`{size_str} (ID: `{fid}`, Тип: `{mime_type}`)\n"
-        except Exception as e:
-            path_info += f"❌ Ошибка при получении содержимого корневой папки: {e}\n"
-            logger.error(f"❌ Ошибка при получении содержимого корневой папки {root_folder_id}: {e}")
-        if len(path_info) > 4096:
-            lines = path_info.split('\n')
-            current_part = ""
-            for line in lines:
-                if len(current_part + line + '\n') > 4000:
-                    await update.message.reply_text(current_part, parse_mode='Markdown')
-                    current_part = "Продолжение `/path`:\n" + line + '\n'
-                else:
-                    current_part += line + '\n'
-            if current_part:
-                await update.message.reply_text(current_part, parse_mode='Markdown')
-        else:
-            await update.message.reply_text(path_info, parse_mode='Markdown')
-        logger.info(f"📤 Ответ на /path отправлен пользователю {user_id}")
-    except Exception as e:
-        error_msg = f"❌ Произошла ошибка при получении структуры папок Google Drive: {e}"
-        logger.error(error_msg, exc_info=True)
-        if update.message:
-            await update.message.reply_text(error_msg)
-
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик неизвестных команд."""
-    if update.message:
-        user_id = update.effective_user.id
-        command = update.message.text.split()[0] if update.message.text else "N/A"
-        logger.info(f"📤 Пользователь {user_id} отправил неизвестную команду: {command}")
-        # Проверка, является ли пользователь разрешённым в личке
-        if update.message.chat.type == 'private':
-            username = update.effective_user.username
-            if not username or username not in ALLOWED_USERS:
-                await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
-                return
-        help_text = (
-            "Кожаный, я понимаю только следующие команды:\n"
-            "• `/start` - начать работу со мной\n"
-            "• `/s 123456` - найти данные по номеру\n"
-            "• `/path` - показать содержимое корневой папки\n"
-            "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
-        )
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+            cls._instance.drive = build('drive', 'v3', credentials=creds)
+        return cls._instance
 
 def extract_number(query: str) -> Optional[str]:
     """
-    Извлекает номер (СН) из строки. Поддерживает буквы, цифры и '-'.
-    Возвращает строку с номером или None.
+    Извлекает номер: только буквы, цифры и тире.
+    Возвращает очищенную строку или None.
     """
     if not query:
         return None
-    clean_query = query.strip()
-    # Проверяем, состоит ли строка только из допустимых символов (английские буквы, цифры, тире)
-    if re.fullmatch(r'[A-Za-z0-9\-]+', clean_query):
-        return clean_query
+    clean = re.sub(r'\s+', '', query.strip())  # Убираем все пробелы
+    if re.fullmatch(r'[A-Za-z0-9\-]+', clean):
+        return clean
     return None
 
-async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
-    """
-    Общая логика обработки запроса с улучшенным управлением локальным кэшем.
-    """
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие."""
     if not update.message:
-        logger.warning("⚠️ Получено обновление без сообщения для handle_query")
         return
-    message = update.message
-    user_id = message.from_user.id if message.from_user else "N/A"
-    # Проверка, является ли пользователь разрешённым в личке
-    if message.chat.type == 'private':
-        username = message.from_user.username
-        if not username or username not in ALLOWED_USERS:
-            await message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
-            logger.info(f"📤 Ответ 'Кожаный мешок' отправлен пользователю {user_id}")
-            return
-    logger.info(f"📥 Получен запрос от пользователя {user_id}: '{query}'")
+    user = update.effective_user
+    chat_type = update.message.chat.type
+
+    if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
+        await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+        return
+
+    await update.message.reply_text(
+        "🤖 Привет! Я могу найти данные по номеру.\n"
+        "Используй:\n"
+        "• `/s 123456` — поиск по номеру\n"
+        "• `/path` — показать содержимое папки\n"
+        "• `@ваш_бот 123456` — упоминание в группе"
+    )
+
+async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать содержимое корневой папки."""
+    if not update.message:
+        return
+    user = update.effective_user
+    if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
+        await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+        return
+
+    try:
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+        root_id = PARENT_FOLDER_ID
+        items = fm.list_files_in_folder(root_id, max_results=100)
+
+        text = f"📂 Корневая папка (ID: `{root_id}`)\n"
+        if not items:
+            text += "Пусто."
+        else:
+            folders = [i for i in items if i['mimeType'] == 'application/vnd.google-apps.folder']
+            files = [i for i in items if i['mimeType'] != 'application/vnd.google-apps.folder']
+
+            for f in sorted(folders, key=lambda x: x['name'].lower()):
+                text += f"📁 `{f['name']}/` (ID: `{f['id']}`)\n"
+            for f in sorted(files, key=lambda x: x['name'].lower()):
+                size = f" ({f['size']} байт)" if f.get('size') else ""
+                text += f"📄 `{f['name']}`{size} (ID: `{f['id']}`)\n"
+
+        await update.message.reply_text(text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"❌ Ошибка /path: {e}")
+        await update.message.reply_text("❌ Ошибка при получении папки.")
+
+class FileManager:
+    """Работа с Google Drive."""
+    def __init__(self, drive):
+        self.drive = drive
+
+    def find_folder(self, parent_id: str, name: str) -> Optional[str]:
+        query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
+        try:
+            res = self.drive.files().list(q=query, fields="files(id)").execute()
+            return res['files'][0]['id'] if res['files'] else None
+        except Exception as e:
+            logger.error(f"❌ Ошибка поиска папки '{name}': {e}")
+            return None
+
+    def find_file(self, folder_id: str, filename: str) -> Optional[str]:
+        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+        try:
+            res = self.drive.files().list(q=query, fields="files(id)").execute()
+            return res['files'][0]['id'] if res['files'] else None
+        except Exception as e:
+            logger.error(f"❌ Ошибка поиска файла '{filename}': {e}")
+            return None
+
+    def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
+        try:
+            info = self.drive.files().get(fileId=file_id, fields="modifiedTime").execute()
+            t = info['modifiedTime']
+            dt = datetime.strptime(t, "%Y-%m-%dT%H:%M:%S.%fZ")
+            return dt.replace(tzinfo=timezone.utc)
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения времени файла {file_id}: {e}")
+            return None
+
+    def download_file(self, file_id: str, local_path: str) -> bool:
+        try:
+            request = self.drive.files().get_media(fileId=file_id)
+            with open(local_path, 'wb') as fh:
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+            logger.info(f"✅ Файл {file_id} скачан в {local_path}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка скачивания {file_id}: {e}")
+            return False
+
+    def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict]:
+        try:
+            query = f"'{folder_id}' in parents and trashed=false"
+            res = self.drive.files().list(q=query, pageSize=max_results, fields="files(id, name, mimeType, size)").execute()
+            return res.get('files', [])
+        except Exception as e:
+            logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
+            return []
+
+class LocalDataSearcher:
+    """Поиск в Excel."""
+    @staticmethod
+    def search_by_number(filepath: str, number: str) -> List[str]:
+        number_upper = number.strip().upper()
+        results = []
+
+        try:
+            wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+            sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
+            if not sheet:
+                logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
+                wb.close()
+                return results
+
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if len(row) > 5 and row[5] and str(row[5]).strip().upper() == number_upper:
+                    sn = str(row[5]).strip() if row[5] else "N/A"
+                    typ = str(row[4]).strip() if row[4] else "N/A"
+                    model = str(row[6]).strip() if row[6] else "N/A"
+                    status = str(row[8]).strip() if row[8] else "N/A"
+                    storage = str(row[13]).strip() if row[13] else "N/A"
+
+                    result = {
+                        "sn": sn,
+                        "type": typ,
+                        "model": model,
+                        "status": status,
+                        "storage": storage
+                    }
+                    results.append(result)
+            wb.close()
+        except Exception as e:
+            logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}")
+        return results
+
+async def handle_search(update: Update, query: str):
+    """Общая логика поиска."""
+    if not update.message:
+        return
+    user = update.effective_user
+    if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
+        await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+        return
+
     number = extract_number(query)
     if not number:
-        await message.reply_text("❌ Не указан корректный номер. Пример: `123456` или `АВ123456`", parse_mode='Markdown')
-        logger.info(f"📤 Ответ на некорректный номер отправлен пользователю {user_id}")
+        await update.message.reply_text(
+            "❌ Укажите корректный номер. Пример: `123456` или `AB123456`",
+            parse_mode='Markdown'
+        )
         return
-    await message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
-    logger.info(f"📤 Подтверждение поиска отправлено пользователю {user_id}")
+
+    await update.message.reply_text(f"🔍 Поиск по номеру: `{number}`", parse_mode='Markdown')
+
     try:
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         lds = LocalDataSearcher()
-        current_year = str(datetime.now().year)
+
         today = datetime.now()
-        # --- Новая логика поиска файла по датам ---
         file_id = None
         used_date = None
-        max_days_back = 30  # Максимальное количество дней для поиска назад
-        for days_back in range(max_days_back + 1):  # Включая сегодня (0)
+
+        # Поиск файла за последние 30 дней
+        for days_back in range(31):
             target_date = today - timedelta(days=days_back)
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
-            logger.info(f"🔍 Попытка поиска файла: {filename}")
-            root_folder = PARENT_FOLDER_ID
-            acts_folder = fm.find_folder(root_folder, "акты")
-            if not acts_folder:
-                logger.warning(f"⚠️ Папка 'акты' не найдена в корневой папке (ID: {root_folder})")
-                continue
-            month_names = ["январь", "февраль", "март", "апрель", "май", "июнь",
-                           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
+            # Путь: PARENT_FOLDER_ID → "акты" → "01 - январь" → "010124" → файл
+            acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
+            if not acts: continue
+
             month_num = target_date.month
-            month_folder_name = f"{target_date.strftime('%m')} - {month_names[month_num - 1]}"
-            month_folder = fm.find_folder(acts_folder, month_folder_name)
-            if not month_folder:
-                logger.warning(f"⚠️ Папка месяца '{month_folder_name}' не найдена в 'акты' (ID: {acts_folder})")
-                continue
-            date_folder_name = target_date.strftime('%d%m%y')
-            date_folder = fm.find_folder(month_folder, date_folder_name)
-            if not date_folder:
-                logger.warning(f"⚠️ Папка с датой '{date_folder_name}' не найдена в папке месяца (ID: {month_folder})")
-                continue
+            month_name = ["январь", "февраль", "март", "апрель", "май", "июнь",
+                          "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][month_num - 1]
+            month_folder = fm.find_folder(acts, f"{target_date.strftime('%m')} - {month_name}")
+            if not month_folder: continue
+
+            date_folder = fm.find_folder(month_folder, target_date.strftime('%d%m%y'))
+            if not date_folder: continue
+
             file_id = fm.find_file(date_folder, filename)
             if file_id:
-                logger.info(f"✅ Файл найден: ID={file_id}")
                 used_date = target_date
                 break
-        if not file_id:
-            await message.reply_text("Сорян, файл не найден, искать негде.")
-            logger.info(f"📤 Сообщение 'файл не найден' отправлено пользователю {user_id}")
-            return
-        # --- Новая логика управления локальным файлом ---
-        # 1. Определяем имя локального файла
-        local_filename = f"local_cache_{used_date.strftime('%Y-%m-%d')}.xlsm"
-        local_filepath = os.path.join(LOCAL_CACHE_DIR, local_filename)
-        logger.info(f"📁 Путь к локальному файлу: {local_filepath}")
-        # 2. Получаем время изменения файла на Google Drive
-        drive_modified_time = fm.get_file_modified_time(file_id)
-        if not drive_modified_time:
-            error_message_for_user = f"❌ Не удалось получить время изменения файла '{filename}' на Google Drive."
-            logger.error(f"❌ Не удалось получить время изменения файла {file_id}")
-            await message.reply_text(error_message_for_user)
-            return
-        # 3. Проверяем, нужно ли скачивать файл
-        download_needed = True
-        if os.path.exists(local_filepath):
-            # Получаем время последнего изменения локального файла
-            local_modified_time = datetime.fromtimestamp(os.path.getmtime(local_filepath), tz=timezone.utc)
-            logger.debug(f"🕒 Время изменения локального файла {local_filepath}: {local_modified_time}")
-            logger.debug(f"🕒 Время изменения файла на Drive: {drive_modified_time}")
-            # Сравниваем времена
-            if drive_modified_time <= local_modified_time:
-                logger.info(f"✅ Локальный файл {local_filepath} актуален. Используем его.")
-                download_needed = False
-            else:
-                logger.info(f"🔄 Файл на Drive новее. Нужно скачать заново.")
-        else:
-            logger.info(f"🆕 Локальный файл {local_filepath} не найден. Нужно скачать.")
-        # 4. Скачиваем файл, если необходимо
-        if download_needed:
-            logger.info(f"⬇️ Скачивание файла {file_id} в локальный файл {local_filepath}")
-            download_success = fm.download_file(file_id, local_filepath)
-            if not download_success:
-                error_message_for_user = f"❌ Не удалось скачать файл '{filename}'."
-                logger.error(f"❌ Не удалось скачать файл {file_id}")
-                await message.reply_text(error_message_for_user)
-                return  # Важно выйти, если скачивание не удалось
-            else:
-                # Обновляем время модификации локального файла до времени Drive файла
-                # os.utime(local_filepath, (time.time(), drive_modified_time.timestamp()))
-                pass
-        # 5. Обрабатываем локальный файл
-        logger.debug(f"🔍 Чтение данных из локального файла {local_filepath}")
-        results = lds.search_by_number(local_filepath, number)
-        if not results:
-            await message.reply_text("Кожаный мешок, проверь СН. Я не могу его найти.")
-            logger.info(f"📤 Сообщение 'СН не найден' отправлено пользователю {user_id}")
-            return
-        # --- Изменённая часть: формирование красивого ответа ---
-        response_lines = []
-        for i, result in enumerate(results, start=1):  # Добавляем нумерацию, если результатов > 1
-            # Разделяем строку по разделителю " | "
-            parts = result.split(" | ")
-            if len(parts) >= 5:  # Убедимся, что есть достаточно столбцов (F,E,G,I,N)
-                # Извлекаем нужные данные
-                sn = parts[0].split(":")[1].strip().strip("'")  # F(Серийный номер):'...'
-                type_terminal = parts[1].split(":")[1].strip().strip("'")  # E(Тип оборудования):'...'
-                model = parts[2].split(":")[1].strip().strip("'")  # G(Модель Терминала):'...'
-                status = parts[3].split(":")[1].strip().strip("'")  # I(Статус):'...'
-                storage = parts[4].split(":")[1].strip().strip("'")  # N(Место хранения):'...'
-                # Формируем красивый ответ
-                # Начинаем с СН
-                line = f"<b>СН {sn}</b>\n"
-                # Добавляем "облако" информации
-                line += "☁️ <b>Информация:</b>\n"
-                line += f"    • Тип терминала: <code>{type_terminal}</code>\n"
-                line += f"    • Модель терминала: <code>{model}</code>\n"
-                line += f"    • Статус терминала: <code>{status}</code>\n"
-                line += f"    • Место хранения терминала: <code>{storage}</code>"
-                # Если результатов несколько, добавляем разделитель
-                if len(results) > 1:
-                    line = f"<b>--- Результат {i} ---</b>\n{line}\n"
-                response_lines.append(line)
-            else:
-                # Если данных недостаточно, выводим как есть
-                response_lines.append(f"<pre>{result}</pre>")
-        # Объединяем строки
-        # Используем parse_mode='HTML'
-        full_response = "\n".join(response_lines)
-        # Проверка длины ответа
-        if len(full_response) > 4096:
-            # Можно разбить на несколько сообщений или обрезать
-            # Здесь просто обрежем и добавим уведомление
-            full_response = full_response[:4050] + "\n<i>... (результаты обрезаны)</i>"
-        await message.reply_text(full_response, parse_mode='HTML')
-        logger.info(f"📤 Результаты поиска ({len(results)} совпадений) отправлены пользователю {user_id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки запроса '{query}' от пользователя {user_id}: {e}", exc_info=True)
-        if update.message:
-            await update.message.reply_text("❌ Произошла ошибка при поиске данных.")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка сообщений: команды и упоминания."""
+        if not file_id:
+            await update.message.reply_text("Сорян, файл не найден, искать негде.")
+            return
+
+        # Подготовка локального файла
+        local_file = os.path.join(LOCAL_CACHE_DIR, f"cache_{used_date.strftime('%Y%m%d')}.xlsm")
+        drive_time = fm.get_file_modified_time(file_id)
+
+        if not drive_time:
+            await update.message.reply_text("❌ Не удалось получить время файла на Drive.")
+            return
+
+        download_needed = True
+        if os.path.exists(local_file):
+            local_time = datetime.fromtimestamp(os.path.getmtime(local_file), tz=timezone.utc)
+            if drive_time <= local_time:
+                download_needed = False
+
+        if download_needed:
+            if not fm.download_file(file_id, local_file):
+                await update.message.reply_text("❌ Не удалось скачать файл.")
+                return
+
+        # Поиск в файле
+        results = lds.search_by_number(local_file, number)
+        if not results:
+            await update.message.reply_text("Кожаный мешок, проверь СН. Я не могу его найти.")
+            return
+
+        # Формирование ответа
+        lines = []
+        for i, r in enumerate(results, 1):
+            line = (
+                f"<b>СН {r['sn']}</b>\n"
+                "☁️ <b>Информация:</b>\n"
+                f"    • Тип терминала: <code>{r['type']}</code>\n"
+                f"    • Модель: <code>{r['model']}</code>\n"
+                f"    • Статус: <code>{r['status']}</code>\n"
+                f"    • Место хранения: <code>{r['storage']}</code>"
+            )
+            if len(results) > 1:
+                line = f"<b>--- Результат {i} ---</b>\n{line}"
+            lines.append(line)
+
+        response = "\n\n".join(lines)
+        if len(response) > 4096:
+            response = response[:4050] + "\n<i>... (обрезано)</i>"
+
+        await update.message.reply_text(response, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска: {e}", exc_info=True)
+        await update.message.reply_text("❌ Произошла ошибка при поиске.")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка всех сообщений."""
     if not update.message or not update.message.text:
         return
-    text = update.message.text.strip()
-    bot_username = context.bot.username
-    is_command_s = text.startswith("/s")
-    is_command_path = text.startswith("/path")
-    is_mention = re.match(rf'@{re.escape(bot_username)}\b', text, re.IGNORECASE)
-    
-    if is_command_path:
-        await show_path(update, context)
-    elif is_command_s:
-        # Извлекаем аргументы из команды /s
-        args = context.args
-        if not args:
-            await update.message.reply_text("❌ Не указан номер после `/s`. Пример: `/s 123456`", parse_mode='Markdown')
-            return
-        query = ' '.join(args)
-        await handle_query(update, context, query)
-    elif is_mention:
-        # Извлекаем текст после упоминания
-        query = re.sub(rf'@{re.escape(bot_username)}\s*', '', text, flags=re.IGNORECASE).strip()
-        if not query:
-            await update.message.reply_text("❌ Не указан номер после упоминания. Пример: `@ваш_бот 123456`", parse_mode='Markdown')
-            return
-        await handle_query(update, context, query)
-    elif text.startswith('/'):
-        await unknown_command(update, context)
 
-def main() -> None:
-    """Главная функция запуска бота."""
+    text = update.message.text.strip()
+    bot_username = context.bot.username.lower()
+
+    # Парсим команду /s
+    if text.startswith("/s"):
+        # Извлекаем всё после /s
+        query = text[2:].strip()
+        if not query:
+            await update.message.reply_text(
+                "❌ Укажите номер после `/s`. Пример: `/s 123456`",
+                parse_mode='Markdown'
+            )
+            return
+        await handle_search(update, query)
+        return
+
+    # Обработка упоминания
+    mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
+    if mention_match:
+        query = mention_match.group(1).strip()
+        if not query:
+            await update.message.reply_text(
+                "❌ Укажите номер после упоминания. Пример: `@ваш_бот 123456`",
+                parse_mode='Markdown'
+            )
+            return
+        await handle_search(update, query)
+        return
+
+    # Неизвестная команда
+    if text.startswith('/'):
+        await update.message.reply_text(
+            "Кожаный, я понимаю только:\n"
+            "• `/start`\n"
+            "• `/s 123456`\n"
+            "• `@ваш_бот 123456`",
+            parse_mode='Markdown'
+        )
+
+def main():
     try:
         init_config()
-    except RuntimeError as e:
-        logger.critical(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
+    except Exception as e:
+        logger.critical(f"❌ Критическая ошибка: {e}")
         return
-    
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Обработчики команд
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
-    
-    # Обработчик для всех текстовых сообщений (команды и упоминания)
-    app.add_handler(MessageHandler(
-        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE),
-        handle_message
-    ))
-    
-    logger.info("🚀 Бот запущен. Поддержка: личка, группы, каналы (при упоминании).")
-    logger.info(f"⚙️ Конфигурация: ROOT_FOLDER_YEAR={ROOT_FOLDER_YEAR}, CITY={CITY}, LOCAL_CACHE_DIR={LOCAL_CACHE_DIR}")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.COMMAND, handle_message))  # Для /s
+
+    logger.info("🚀 Бот запущен.")
     app.run_polling()
 
 if __name__ == '__main__':
