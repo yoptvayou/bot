@@ -481,27 +481,51 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         logger.debug(f"🔍 Чтение данных из локального файла {local_filepath}")
         results = lds.search_by_number(local_filepath, number)
 
+        # --- Изменённая часть: формирование безопасного ответа ---
         if not results:
             await message.reply_text(f"❌ Запись с номером `{number}` не найдена.")
             logger.info(f"📤 Сообщение 'запись не найдена' отправлено пользователю {user_id}")
             return
 
-        response = f"✅ Найдено по `{number}`:\n" + "\n".join(results)
+        # Формируем ответ в нужном формате
+        response_lines = []
+        for result in results:
+            # Разделяем строку по разделителю " | "
+            parts = result.split(" | ")
+            if len(parts) >= 14:  # Убедимся, что есть достаточно столбцов
+                # Извлекаем нужные данные
+                sn = parts[0]  # СН (столбец A)
+                type_terminal = parts[4] if len(parts) > 4 else "N/A"  # Тип терминала (E)
+                model = parts[6] if len(parts) > 6 else "N/A"  # Модель (G)
+                status = parts[8] if len(parts) > 8 else "N/A"  # Статус (I)
+                storage = parts[13] if len(parts) > 13 else "N/A"  # Место хранения (N)
+
+                # Формируем строку в нужном формате
+                line = (
+                    f"СН {sn}; информация: Тип терминала: {type_terminal}; "
+                    f"модель терминала: {model}; Статус терминала: {status}; "
+                    f"Место хранения терминала: {storage}"
+                )
+                response_lines.append(line)
+
+        # Объединяем строки
+        response = "\n".join(response_lines)
         if len(response) > 4096:
             response = response[:4090] + "\n..."
+    
+                await message.reply_text(response, parse_mode='Markdown')
+                logger.info(f"📤 Результаты поиска ({len(results)} совпадений) отправлены пользователю {user_id}")
 
-        await message.reply_text(response, parse_mode='Markdown')
-        logger.info(f"📤 Результаты поиска ({len(results)} совпадений) отправлены пользователю {user_id}")
+        except Exception as e:
 
-    except Exception as e:
         logger.error(f"❌ Ошибка обработки запроса '{query}' от пользователя {user_id}: {e}", exc_info=True)
         if update.message:
             await update.message.reply_text("❌ Произошла ошибка при поиске данных.")
 
-# --- Новый обработчик для любого текста ---
-async def handle_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик любого текстового сообщения, не являющегося командой или упоминанием."""
-    if not update.message or not update.message.text:
+        # --- Новый обработчик для любого текста ---
+        async def handle_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            """Обработчик любого текстового сообщения, не являющегося командой или упоминанием."""
+            if not update.message or not update.message.text:
         return
 
     user_id = update.effective_user.id
