@@ -3,8 +3,8 @@ import re
 import os
 import base64
 import json
-import time  # Для sleep при необходимости
-from datetime import datetime, timedelta, timezone  # Добавлено timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -16,8 +16,10 @@ import io
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
 import warnings
+
 # Подавить предупреждения от openpyxl о Data Validation
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported and will be removed", category=UserWarning, module="openpyxl.worksheet._reader")
+
 # --- Настройка логирования ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,19 +29,25 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 # Создаем логгер для нашего приложения
 logger = logging.getLogger(__name__)
+
 # --- Конфигурация ---
 CITY = 'Воронеж'
 SCOPES = [
-    'https://www.googleapis.com/auth/drive'  # Убран доступ к Sheets
+    'https://www.googleapis.com/auth/drive'
 ]
 # Директория для хранения временных файлов
 LOCAL_CACHE_DIR = "./local_cache"
+
 # --- Глобальные переменные (инициализируются в main) ---
 CREDENTIALS_FILE: str = ""
 TELEGRAM_TOKEN: str = ""
 PARENT_FOLDER_ID: str = ""
-TEMP_FOLDER_ID: str = ""  # Может не использоваться, но оставим
+TEMP_FOLDER_ID: str = ""
 ROOT_FOLDER_YEAR: str = ""
+
+# --- Список разрешённых пользователей ---
+ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}  # Используем set для более быстрого поиска
+
 def get_credentials_path() -> str:
     """Декодирует Google Credentials из переменной окружения и сохраняет во временный файл."""
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
@@ -56,30 +64,43 @@ def get_credentials_path() -> str:
     except Exception as e:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
+
 def init_config():
     """Инициализирует глобальные переменные конфигурации."""
     global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR
     CREDENTIALS_FILE = get_credentials_path()
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
     PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
-    TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")  # Не используется напрямую, но оставим
+    TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
     ROOT_FOLDER_YEAR = str(datetime.now().year)
-    if not all([TELEGRAM_TOKEN, PARENT_FOLDER_ID]):  # TEMP_FOLDER_ID больше не обязательна
+    if not all([TELEGRAM_TOKEN, PARENT_FOLDER_ID]):
         missing = [k for k, v in {"TELEGRAM_TOKEN": TELEGRAM_TOKEN, "PARENT_FOLDER_ID": PARENT_FOLDER_ID}.items() if not v]
         raise RuntimeError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing)}")
     # Создаем директорию для кэша, если её нет
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
     logger.info(f"📁 Директория для локального кэша: {os.path.abspath(LOCAL_CACHE_DIR)}")
+
 class GoogleServices:
     """Инкапсуляция Google API сервисов."""
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
-        self.drive = build('drive', 'v3', credentials=creds)
-        # self.sheets = build('sheets', 'v4', credentials=creds) # Не используется
+        if not self._initialized:
+            creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+            self.drive = build('drive', 'v3', credentials=creds)
+            self._initialized = True
+
 class FileManager:
     """Работа с файлами и папками на Google Диске."""
     def __init__(self, drive_service):
         self.drive = drive_service
+
     def find_folder(self, parent_id: str, name: str) -> Optional[str]:
         """Найти папку по имени."""
         query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
@@ -95,6 +116,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска папки '{name}' в {parent_id}: {e}")
             return None
+
     def find_file(self, folder_id: str, filename: str) -> Optional[str]:
         """Найти файл в папке."""
         query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
@@ -111,6 +133,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска файла '{filename}' в {folder_id}: {e}")
             return None
+
     def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
         """Получает время последнего изменения файла на Google Drive."""
         try:
@@ -128,6 +151,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения времени изменения файла {file_id}: {e}")
             return None
+
     def download_file(self, file_id: str, local_filename: str) -> bool:
         """Скачивает файл с Google Drive в локальный файл."""
         try:
@@ -145,6 +169,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка скачивания файла {file_id} в {local_filename}: {e}")
             return False
+
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict[str, Any]]:
         """Получить список файлов и папок в указанной папке Google Drive."""
         try:
@@ -160,16 +185,17 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения списка файлов из папки {folder_id}: {e}")
             return []
+
 class LocalDataSearcher:
     """Поиск данных в локальном Excel файле."""
     @staticmethod
     def search_by_number(local_filepath: str, target_number: str, sheet_name: str = "Терминалы") -> List[str]:
         """
-        Ищет строки в локальном .xlsm файле, где столбец F (индекс 5) == target_number.
+        Ищет строки в локальном .xlsm файле, где столбец F (индекс 5) == target_number (регистронезависимо).
         Возвращает только нужные столбцы: F, E, G, I, N
         """
         logger.info(f"🔍 Начинаю поиск номера '{target_number}' в локальном файле {local_filepath}, лист '{sheet_name}'")
-        target_number = target_number.strip().upper()
+        target_number_upper = target_number.strip().upper()
         results = []
         try:
             # Открываем книгу Excel
@@ -180,23 +206,12 @@ class LocalDataSearcher:
                 return results
             sheet: Worksheet = workbook[sheet_name]
             logger.debug(f"📄 Обработка листа '{sheet_name}' из файла {local_filepath}")
-            # Получаем значения заголовков (первая строка)
-            # Предполагаем, что заголовки находятся в первой строке
-            header_row = None
-            try:
-                header_row = list(sheet.iter_rows(min_row=1, max_row=1, values_only=True))[0]
-                # Преобразуем значения заголовков в строки, заменяя None на пустые строки
-                header_names = [str(cell) if cell is not None else "" for cell in header_row]
-                logger.debug(f"🏷️ Заголовки листа '{sheet_name}': {header_names[:10]}...")  # Логируем первые 10
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка получения заголовков из первой строки: {e}")
-                header_names = None  # Если не удалось получить заголовки
             # Предполагаем, что данные начинаются со второй строки (первая - заголовок)
             for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
                 if len(row) > 0:  # Проверяем, что в строке есть хотя бы один столбец
-                    # Исправлено: теперь ищем по столбцу F (индекс 5)
+                    # Исправлено: теперь ищем по столбцу F (индекс 5), регистронезависимо
                     cell_f_value = str(row[5]).strip().upper() if len(row) > 5 and row[5] is not None else ""
-                    if cell_f_value == target_number:
+                    if cell_f_value == target_number_upper:
                         logger.info(f"🔍 Совпадение найдено в файле '{local_filepath}', лист '{sheet_name}', строка {row_num}")
                         # Берём только нужные столбцы: F(СН), E(Тип оборудования), G(Модель), I(Статус), N(Место хранения)
                         sn = str(row[5]).strip() if row[5] is not None else "N/A"
@@ -210,26 +225,39 @@ class LocalDataSearcher:
             workbook.close()
             logger.info(f"✅ Поиск завершен. Найдено {len(results)} совпадений.")
         except Exception as e:
-            logger.error(f"❌ Ошибка при поиске в локальном файле {local_filepath}: {e}", exc_info=True)  # Добавлен exc_info для трассировки
+            logger.error(f"❌ Ошибка при поиске в локальном файле {local_filepath}: {e}", exc_info=True)
         return results
+
 # --- Команды бота ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Приветствие (работает в личке и группах)."""
     if update.message:
         logger.info(f"📤 Отправка приветствия пользователю {update.effective_user.id}")
+        # Проверка, является ли пользователь разрешённым в личке
+        if update.message.chat.type == 'private':
+            username = update.effective_user.username
+            if not username or username not in ALLOWED_USERS:
+                await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+                return
         await update.message.reply_text(
             "🤖 Привет! Я могу найти данные по номеру.\n"
             "Используй:\n"
             "• `/s 123456` - поиск по номеру\n"
             "• `/path` - показать содержимое корневой папки\n"
-            "• `/test ДДММГГ` - тест формирования пути (например, `/test 010125`)\n"
             "• `@ваш_бот 123456` - упоминание в группах/каналах"
         )
+
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает содержимое каталога на Google Drive по PARENT_FOLDER_ID."""
     if not update.message:
         return
     user_id = update.effective_user.id
+    # Проверка, является ли пользователь разрешённым в личке
+    if update.message.chat.type == 'private':
+        username = update.effective_user.username
+        if not username or username not in ALLOWED_USERS:
+            await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+            return
     logger.info(f"📤 Пользователь {user_id} запросил команду /path")
     try:
         await update.message.reply_text("🔍 Получаю содержимое корневой папки на Google Drive...")
@@ -286,74 +314,28 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(error_msg, exc_info=True)
         if update.message:
             await update.message.reply_text(error_msg)
-async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /test для формирования пути и имени файла по дате."""
-    if not update.message:
-        return
-    user_id = update.effective_user.id
-    logger.info(f"📤 Пользователь {user_id} запросил команду /test")
-    if not context.args or len(context.args) != 1:
-        await update.message.reply_text(
-            "❌ Неверный формат. Используй: `/test ДДММГГ`\n"
-            "Пример: `/test 010125`",
-            parse_mode='Markdown'
-        )
-        return
-    date_str = context.args[0].strip()
-    if not (len(date_str) == 6 and date_str.isdigit()):
-        await update.message.reply_text(
-            "❌ Неверный формат даты. Нужно 6 цифр: ДДММГГ\n"
-            "Пример: `010125` для 1 января 2025 года",
-            parse_mode='Markdown'
-        )
-        return
-    try:
-        day = date_str[:2]
-        month = date_str[2:4]
-        year_short = date_str[4:]
-        year_full = f"20{year_short}"
-        month_names = ["январь", "февраль", "март", "апрель", "май", "июнь",
-                       "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
-        try:
-            month_index = int(month) - 1
-            month_name = month_names[month_index] if 0 <= month_index <= 11 else "???"
-        except (ValueError, IndexError):
-            month_name = "???"
-        filename = f"АПП_Склад_{date_str}_{CITY}.xlsm"
-        path_structure = (
-            f"{year_full}\n"
-            f"  └── акты\n"
-            f"      └── {month} - {month_name}\n"
-            f"          └── {date_str}\n"
-            f"              └── {filename}"
-        )
-        response = (
-            f"📅 Дата: `{day}.{month}.20{year_short}`\n"
-            f"📂 Сформированный путь и файл:\n"
-            f"```\n"
-            f"{path_structure}\n"
-            f"```"
-        )
-        await update.message.reply_text(response, parse_mode='Markdown')
-        logger.info(f"📤 Ответ на /test ({date_str}) отправлен пользователю {user_id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка в команде /test: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при обработке даты.", parse_mode='Markdown')
+
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик неизвестных команд."""
     if update.message:
         user_id = update.effective_user.id
         command = update.message.text.split()[0] if update.message.text else "N/A"
         logger.info(f"📤 Пользователь {user_id} отправил неизвестную команду: {command}")
+        # Проверка, является ли пользователь разрешённым в личке
+        if update.message.chat.type == 'private':
+            username = update.effective_user.username
+            if not username or username not in ALLOWED_USERS:
+                await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+                return
         help_text = (
             "Кожаный, я понимаю только следующие команды:\n"
             "• `/start` - начать работу со мной\n"
             "• `/s 123456` - найти данные по номеру\n"
             "• `/path` - показать содержимое корневой папки\n"
-            "• `/test ДДММГГ` - тест формирования пути\n"
             "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
         )
         await update.message.reply_text(help_text, parse_mode='Markdown')
+
 def extract_number(query: str) -> Optional[str]:
     """
     Извлекает номер (СН) из строки. Поддерживает буквы, цифры и '-'.
@@ -363,15 +345,10 @@ def extract_number(query: str) -> Optional[str]:
         return None
     clean_query = query.strip()
     # Проверяем, состоит ли строка только из допустимых символов (английские буквы, цифры, тире)
-    # Используем регулярное выражение для более точного контроля
     if re.fullmatch(r'[A-Za-z0-9\-]+', clean_query):
         return clean_query
-    # Альтернатива без regex (простая проверка на допустимые символы)
-    # allowed_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-")
-    # if all(c in allowed_chars for c in clean_query):
-    #     return clean_query
-    # Если строка содержит недопустимые символы
     return None
+
 async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str) -> None:
     """
     Общая логика обработки запроса с улучшенным управлением локальным кэшем.
@@ -381,6 +358,13 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         return
     message = update.message
     user_id = message.from_user.id if message.from_user else "N/A"
+    # Проверка, является ли пользователь разрешённым в личке
+    if message.chat.type == 'private':
+        username = message.from_user.username
+        if not username or username not in ALLOWED_USERS:
+            await message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+            logger.info(f"📤 Ответ 'Кожаный мешок' отправлен пользователю {user_id}")
+            return
     logger.info(f"📥 Получен запрос от пользователя {user_id}: '{query}'")
     number = extract_number(query)
     if not number:
@@ -395,13 +379,12 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         lds = LocalDataSearcher()
         current_year = str(datetime.now().year)
         today = datetime.now()
-        yesterday = today - timedelta(days=1)
-        dates_to_try = [today, yesterday]
+        # --- Новая логика поиска файла по датам ---
         file_id = None
         used_date = None
-        logger.info(f"🔍 Начинаю поиск файла для номера: {number}")
-        logger.info(f"📁 PARENT_FOLDER_ID (корневая папка): {PARENT_FOLDER_ID}")
-        for target_date in dates_to_try:
+        max_days_back = 30  # Максимальное количество дней для поиска назад
+        for days_back in range(max_days_back + 1):  # Включая сегодня (0)
+            target_date = today - timedelta(days=days_back)
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
             logger.info(f"🔍 Попытка поиска файла: {filename}")
             root_folder = PARENT_FOLDER_ID
@@ -428,10 +411,9 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 used_date = target_date
                 break
         if not file_id:
-            await message.reply_text("❌ Файл за сегодня или вчера не найден.")
+            await message.reply_text("Сорян, файл не найден, искать негде.")
             logger.info(f"📤 Сообщение 'файл не найден' отправлено пользователю {user_id}")
             return
-        # --- Удалена отправка даты и пути до файла ---
         # --- Новая логика управления локальным файлом ---
         # 1. Определяем имя локального файла
         local_filename = f"local_cache_{used_date.strftime('%Y-%m-%d')}.xlsm"
@@ -476,8 +458,8 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         logger.debug(f"🔍 Чтение данных из локального файла {local_filepath}")
         results = lds.search_by_number(local_filepath, number)
         if not results:
-            await message.reply_text(f"❌ Запись с номером `{number}` не найдена.")
-            logger.info(f"📤 Сообщение 'запись не найдена' отправлено пользователю {user_id}")
+            await message.reply_text("Кожаный мешок, проверь СН. Я не могу его найти.")
+            logger.info(f"📤 Сообщение 'СН не найден' отправлено пользователю {user_id}")
             return
         # --- Изменённая часть: формирование красивого ответа ---
         response_lines = []
@@ -521,7 +503,7 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         logger.error(f"❌ Ошибка обработки запроса '{query}' от пользователя {user_id}: {e}", exc_info=True)
         if update.message:
             await update.message.reply_text("❌ Произошла ошибка при поиске данных.")
-# --- Новый обработчик для любого текста ---
+
 async def handle_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик любого текстового сообщения, не являющегося командой или упоминанием."""
     if not update.message or not update.message.text:
@@ -531,6 +513,13 @@ async def handle_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Игнорируем команды и упоминания, так как они обрабатываются отдельно
     if text.startswith('/') or re.match(rf'@{re.escape(context.bot.username)}\b', text, re.IGNORECASE):
         return  # Пусть другие обработчики этим займутся
+    # Проверка, является ли пользователь разрешённым в личке
+    if update.message.chat.type == 'private':
+        username = update.effective_user.username
+        if not username or username not in ALLOWED_USERS:
+            await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
+            logger.info(f"📤 Ответ 'Кожаный мешок' отправлен пользователю {user_id}")
+            return
     logger.info(f"📥 Пользователь {user_id} отправил текст: '{text}'")
     # Отправляем ответ "Кожаный ублюдок..."
     response = (
@@ -539,11 +528,11 @@ async def handle_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "• `/start` - начать работу со мной\n"
         "• `/s 123456` - найти данные по номеру\n"
         "• `/path` - показать содержимое корневой папки\n"
-        "• `/test ДДММГГ` - тест формирования пути\n"
         "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
     )
     await update.message.reply_text(response, parse_mode='Markdown')
     logger.info(f"📤 Ответ 'Кожаный ублюдок...' отправлен пользователю {user_id}")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка сообщений: команды и упоминания."""
     if not update.message or not update.message.text:
@@ -552,15 +541,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     bot_username = context.bot.username
     is_command_s = text.startswith("/s")
     is_command_path = text.startswith("/path")
-    is_command_test = text.startswith("/test")
     is_mention = re.match(rf'@{re.escape(bot_username)}\b', text, re.IGNORECASE)
     if is_command_path:
         await show_path(update, context)
-    elif is_command_test:
-        command_parts = text.split(' ', 1)
-        args = command_parts[1:] if len(command_parts) > 1 else []
-        context.args = args
-        await test_command(update, context)
     elif is_command_s or is_mention:
         if is_command_s:
             query = ' '.join(context.args) if context.args else ''
@@ -570,6 +553,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif text.startswith('/'):
         await unknown_command(update, context)
     # Обработка любого другого текста перемещена в handle_any_text
+
 def main() -> None:
     """Главная функция запуска бота."""
     try:
@@ -582,8 +566,6 @@ def main() -> None:
     # Обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
-    app.add_handler(CommandHandler("test", test_command))
-    app.add_handler(CommandHandler("s", lambda u, c: handle_query(u, c, ' '.join(c.args) if c.args else '')))
     # Обработчик для неизвестных команд
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     # Обработчик для любого текста (должен быть ниже обработчиков команд)
@@ -600,5 +582,6 @@ def main() -> None:
     logger.info("🚀 Бот запущен. Поддержка: личка, группы, каналы (при упоминании).")
     logger.info(f"⚙️ Конфигурация: ROOT_FOLDER_YEAR={ROOT_FOLDER_YEAR}, CITY={CITY}, LOCAL_CACHE_DIR={LOCAL_CACHE_DIR}")
     app.run_polling()
+
 if __name__ == '__main__':
     main()
