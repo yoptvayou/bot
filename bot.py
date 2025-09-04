@@ -474,7 +474,6 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
                 model = parts[6] if len(parts) > 6 else "N/A"  # Модель (G)
                 status = parts[8] if len(parts) > 8 else "N/A"  # Статус (I)
                 storage = parts[13] if len(parts) > 13 else "N/A"  # Место хранения (N)
-
                 # Формируем строку в нужном формате
                 line = (
                     f"СН {sn}; информация: Тип терминала: {type_terminal}; "
@@ -485,7 +484,6 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
             else:
                 # Если данных недостаточно, выводим как есть
                 response_lines.append(result)
-
         # Объединяем строки
         response = "\n".join(response_lines)
         if len(response) > 4096:
