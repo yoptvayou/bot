@@ -516,11 +516,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if is_command_path:
         await show_path(update, context)
-    elif is_command_s or is_mention:
-        if is_command_s:
-            query = ' '.join(context.args) if context.args else ''
-        else:
-            query = re.sub(rf'@{re.escape(bot_username)}\s*', '', text, flags=re.IGNORECASE).strip()
+    elif is_command_s:
+        # Извлекаем аргументы из команды /s
+        args = context.args
+        if not args:
+            await update.message.reply_text("❌ Не указан номер после `/s`. Пример: `/s 123456`", parse_mode='Markdown')
+            return
+        query = ' '.join(args)
+        await handle_query(update, context, query)
+    elif is_mention:
+        # Извлекаем текст после упоминания
+        query = re.sub(rf'@{re.escape(bot_username)}\s*', '', text, flags=re.IGNORECASE).strip()
+        if not query:
+            await update.message.reply_text("❌ Не указан номер после упоминания. Пример: `@ваш_бот 123456`", parse_mode='Markdown')
+            return
         await handle_query(update, context, query)
     elif text.startswith('/'):
         await unknown_command(update, context)
@@ -540,15 +549,9 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
     
-    # Обработчик для команд
+    # Обработчик для всех текстовых сообщений (команды и упоминания)
     app.add_handler(MessageHandler(
-        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE) & filters.COMMAND,
-        handle_message
-    ))
-    
-    # Обработчик для упоминаний и команд в личке
-    app.add_handler(MessageHandler(
-        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE) & ~filters.COMMAND,
+        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE),
         handle_message
     ))
     
