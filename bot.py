@@ -253,7 +253,6 @@ class LocalDataSearcher:
 
                 # Дополнительные поля по условиям
                 if status == "На складе":
-                    if storage != "Не указано":
                         response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
 
                 elif status == "Зарезервировано" and issue_status == "Выдан":
@@ -264,7 +263,6 @@ class LocalDataSearcher:
                     ])
 
                 elif status in ["Не работоспособно", "Выведено из эксплуатации"]:
-                    if storage != "Не указано":
                         response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
 
                 # Остальные статусы — только базовые данные
