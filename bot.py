@@ -214,8 +214,8 @@ class LocalDataSearcher:
             # Предполагаем, что данные начинаются со второй строки (первая - заголовок)
             for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
                 if len(row) > 0:  # Проверяем, что в строке есть хотя бы один столбец
-                    cell_a_value = str(row[0]).strip().upper() if row[0] is not None else ""
-                    if cell_a_value == target_number:
+                    cell_f_value = str(row[5]).strip().upper() if len(row) > 5 and row[5] is not None else "" # row[5] - это шестой элемент (F)
+                    if cell_f_value == target_number:
                         logger.info(f"🔍 Совпадение найдено в файле '{local_filepath}', лист '{sheet_name}', строка {row_num}")
                         # Берём A-Z (первые 26 столбцов), убираем пустые
                         cleaned_data = []
