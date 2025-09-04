@@ -212,38 +212,66 @@ class FileManager:
 class LocalDataSearcher:
     """Поиск в Excel."""
     @staticmethod
-    def search_by_number(filepath: str, number: str) -> List[str]:
-        number_upper = number.strip().upper()
-        results = []
-
-        try:
-            wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
-            sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
-            if not sheet:
-                logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
-                wb.close()
-                return results
-
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                if len(row) > 5 and row[5] and str(row[5]).strip().upper() == number_upper:
-                    sn = str(row[5]).strip() if row[5] else "N/A"
-                    typ = str(row[4]).strip() if row[4] else "N/A"
-                    model = str(row[6]).strip() if row[6] else "N/A"
-                    status = str(row[8]).strip() if row[8] else "N/A"
-                    storage = str(row[13]).strip() if row[13] else "N/A"
-
-                    result = {
-                        "sn": sn,
-                        "type": typ,
-                        "model": model,
-                        "status": status,
-                        "storage": storage
-                    }
-                    results.append(result)
+def search_by_number(filepath: str, number: str) -> List[str]:
+    number_upper = number.strip().upper()
+    results = []
+    try:
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
+        if not sheet:
+            logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
             wb.close()
-        except Exception as e:
-            logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}")
-        return results
+            return results
+
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if len(row) < 17 or not row[5]:  # Проверяем, что есть хотя бы 17 столбцов и СН (столбец 6, индекс 5)
+                continue
+
+            sn = str(row[5]).strip().upper()
+            if sn != number_upper:
+                continue
+
+            # Извлекаем нужные поля по индексам (0-based)
+            equipment_type = str(row[4]).strip() if row[4] else "N/A"  # E (5)
+            model = str(row[6]).strip() if row[6] else "N/A"           # G (7)
+            status = str(row[8]).strip() if row[8] else "N/A"          # I (9)
+            issue_status = str(row[9]).strip() if row[9] else ""       # J (10) — "Выдан" или пусто
+            request_num = str(row[7]).strip() if row[7] else "N/A"     # H (8) — Номер заявки
+            engineer = str(row[15]).strip() if row[15] else "N/A"      # P (16) — Выдан инженеру
+            issue_date = str(row[16]).strip() if row[16] else "N/A"    # Q (17) — Дата выдачи
+            storage = str(row[13]).strip() if row[13] else "N/A"       # N (14) — Место хранения
+
+            # Формируем ответ в зависимости от статуса
+            response_parts = [
+                f"    • Тип оборудования: <code>{equipment_type}</code>",
+                f"    • Модель оборудования: <code>{model}</code>",
+                f"    • Статус: <code>{status}</code>"
+            ]
+
+            if status == "На складе":
+                response_parts.append(f"    • Место хранения: <code>{storage}</code>")
+
+            elif status == "Зарезервировано":
+                if issue_status == "Выдан":
+                    response_parts.extend([
+                        f"    • Номер заявки: <code>{request_num}</code>",
+                        f"    • Выдан инженеру: <code>{engineer}</code>",
+                        f"    • Дата выдачи: <code>{issue_date}</code>"
+                    ])
+                # Если "Зарезервировано", но не "Выдан" — ничего дополнительно не добавляем
+
+            else:
+                # Для всех остальных статусов — только базовые 3 поля (уже добавлены)
+                pass
+
+            # Формируем итоговый текст
+            result_text = "<b>СН " + str(row[5]) + "</b>\n☁️ <b>Информация:</b>\n" + "\n".join(response_parts)
+            results.append(result_text)
+
+        wb.close()
+    except Exception as e:
+        logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}", exc_info=True)
+    return results
 
 async def handle_search(update: Update, query: str):
     """Общая логика поиска."""
