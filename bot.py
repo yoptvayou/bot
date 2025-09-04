@@ -41,6 +41,7 @@ ROOT_FOLDER_YEAR: str = ""
 # --- Разрешённые пользователи ---
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
 
+
 def get_credentials_path() -> str:
     """Декодирует Google Credentials из переменной окружения."""
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
@@ -58,6 +59,7 @@ def get_credentials_path() -> str:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
 
+
 def init_config():
     """Инициализация конфигурации."""
     global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR
@@ -66,23 +68,28 @@ def init_config():
     PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
     TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
     ROOT_FOLDER_YEAR = str(datetime.now().year)
+
     if not TELEGRAM_TOKEN or not PARENT_FOLDER_ID:
         missing = []
         if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
         if not PARENT_FOLDER_ID: missing.append("PARENT_FOLDER_ID")
         raise RuntimeError(f"❌ Отсутствуют переменные окружения: {', '.join(missing)}")
+
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
     logger.info(f"📁 Локальный кэш: {os.path.abspath(LOCAL_CACHE_DIR)}")
+
 
 class GoogleServices:
     """Одиночка для Google API."""
     _instance = None
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
+
 
 def extract_number(query: str) -> Optional[str]:
     """
@@ -91,10 +98,12 @@ def extract_number(query: str) -> Optional[str]:
     """
     if not query:
         return None
-    clean = re.sub(r'\s+', '', query.strip())  # Убираем все пробелы
-    if re.fullmatch(r'[A-Za-z0-9\-]+', clean):
-        return clean
+    # Удаляем все пробелы и лишние символы
+    clean = re.sub(r'[^A-Za-z0-9\-]', '', query.strip())
+    if clean and re.fullmatch(r'[A-Za-z0-9\-]+', clean):
+        return clean.upper()  # Приводим к верхнему регистру для единообразия
     return None
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие — нейтральный стиль."""
@@ -108,13 +117,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Обратитесь к администратору для получения прав."
         )
         return
+
     await update.message.reply_text(
         "Добро пожаловать.\n"
         "Доступные команды:\n"
         "• <code>/s 123456</code> — найти терминал по серийному номеру\n"
         "• <code>/path</code> — показать содержимое корневой папки\n"
-        "• <code>@ваш_бот 123456</code> — вызвать поиск по упоминанию"
+        "• <code>@ваш_бот 123456</code> — вызвать поиск по упоминанию",
+        parse_mode='HTML'
     )
+
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать содержимое папки — нейтральный стиль."""
@@ -127,27 +139,32 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Обратитесь к администратору для получения прав."
         )
         return
+
     try:
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         root_id = PARENT_FOLDER_ID
         items = fm.list_files_in_folder(root_id, max_results=100)
+
         text = f"🗂 <b>Корневая папка</b> (ID: <code>{root_id}</code>)\n"
         if not items:
             text += "Содержимое отсутствует."
         else:
             folders = [i for i in items if i['mimeType'] == 'application/vnd.google-apps.folder']
             files = [i for i in items if i['mimeType'] != 'application/vnd.google-apps.folder']
+
             if folders:
                 text += "<b>Подпапки:</b>\n"
                 for f in sorted(folders, key=lambda x: x['name'].lower()):
                     text += f"📁 <code>{f['name']}/</code>\n"
                 text += "\n"
+
             if files:
                 text += "<b>Файлы:</b>\n"
                 for f in sorted(files, key=lambda x: x['name'].lower()):
                     size = f" ({f['size']} байт)" if f.get('size') else ""
                     text += f"📄 <code>{f['name']}</code>{size}\n"
+
         await update.message.reply_text(text, parse_mode='HTML')
     except Exception as e:
         logger.error(f"❌ Ошибка /path: {e}")
@@ -155,6 +172,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Произошла ошибка при получении списка файлов.\n"
             "Попробуйте позже."
         )
+
 
 class FileManager:
     """Работа с Google Drive."""
@@ -212,6 +230,7 @@ class FileManager:
             logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
             return []
 
+
 class LocalDataSearcher:
     """Поиск в Excel по СН и формирование ответа по статусу."""
     @staticmethod
@@ -226,10 +245,11 @@ class LocalDataSearcher:
                 wb.close()
                 return results
 
-            # Индексы столбцов (A=1): E=5, G=7, H=8, I=9, N=14, O=15, P=16, Q=17
             for row in sheet.iter_rows(min_row=2, values_only=True):
-                if len(row) < 17 or not row[5]:  # СН в F (6)
+                if len(row) < 17 or not row[5]:  # СН в столбце F (индекс 5)
                     continue
+
+                # Извлечение данных
                 sn = str(row[5]).strip().upper()
                 if sn != number_upper:
                     continue
@@ -237,11 +257,23 @@ class LocalDataSearcher:
                 equipment_type = str(row[4]).strip() if row[4] else "Не указано"
                 model = str(row[6]).strip() if row[6] else "Не указано"
                 request_num = str(row[7]).strip() if row[7] else "Не указано"
-                status = str(row[8]).strip() if row[8] else "Не указано"
+
+                # Регистронезависимая обработка статусов
+                raw_status = str(row[8]) if row[8] else ""
+                status = raw_status.strip()
+                status_lower = status.lower()
+
                 storage = str(row[13]).strip() if row[13] else "Не указано"
-                issue_status = str(row[14]).strip() if row[14] else ""
+
+                raw_issue_status = str(row[14]) if row[14] else ""
+                issue_status = raw_issue_status.strip()
+                issue_status_lower = issue_status.lower()
+
                 engineer = str(row[15]).strip() if row[15] else "Не указано"
                 issue_date = str(row[16]).strip() if row[16] else "Не указано"
+
+                # Логируем для отладки
+                logger.info(f"Найден СН {sn}: статус='{status}', выдан='{issue_status}', место='{storage}'")
 
                 # Формируем базовый ответ
                 response_parts = [
@@ -251,21 +283,21 @@ class LocalDataSearcher:
                     f"<b>Статус оборудования:</b> <code>{status}</code>"
                 ]
 
-                # Дополнительные поля по условиям
-                if status == "На складе":
-                        response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
-
-                elif status == "Зарезервировано" and issue_status == "Выдан":
+                # Показываем место на складе, если:
+                # - На складе
+                # - Не работоспособно / Выведено из эксплуатации
+                # - Зарезервировано и выдан — тоже показываем место
+                if status_lower == "на складе":
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
+                elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
+                elif status_lower == "зарезервировано" and issue_status_lower == "выдан":
                     response_parts.extend([
                         f"<b>Номер заявки:</b> <code>{request_num}</code>",
                         f"<b>Выдан инженеру:</b> <code>{engineer}</code>",
-                        f"<b>Дата выдачи:</b> <code>{issue_date}</code>"
+                        f"<b>Дата выдачи:</b> <code>{issue_date}</code>",
+                        f"<b>Место на складе:</b> <code>{storage}</code>"
                     ])
-
-                elif status in ["Не работоспособно", "Выведено из эксплуатации"]:
-                        response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
-
-                # Остальные статусы — только базовые данные
 
                 result_text = "ℹ️ <b>Информация о терминале</b>\n" + "\n".join(response_parts)
                 results.append(result_text)
@@ -274,6 +306,7 @@ class LocalDataSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}", exc_info=True)
         return results
+
 
 async def handle_search(update: Update, query: str):
     """Общая логика поиска — нейтральный стиль."""
@@ -291,7 +324,7 @@ async def handle_search(update: Update, query: str):
     if not number:
         await update.message.reply_text(
             "Некорректный формат номера.\n"
-            "Введите серийный номер в формате: AB123456 (без пробелов).",
+            "Введите серийный номер в формате: AB123456 (без пробелов и спецсимволов).",
             parse_mode='HTML'
         )
         return
@@ -312,16 +345,19 @@ async def handle_search(update: Update, query: str):
             filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
 
             acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
-            if not acts: continue
+            if not acts:
+                continue
 
             month_num = target_date.month
             month_name = ["январь", "февраль", "март", "апрель", "май", "июнь",
                           "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][month_num - 1]
             month_folder = fm.find_folder(acts, f"{target_date.strftime('%m')} - {month_name}")
-            if not month_folder: continue
+            if not month_folder:
+                continue
 
             date_folder = fm.find_folder(month_folder, target_date.strftime('%d%m%y'))
-            if not date_folder: continue
+            if not date_folder:
+                continue
 
             file_id = fm.find_file(date_folder, filename)
             if file_id:
@@ -374,6 +410,7 @@ async def handle_search(update: Update, query: str):
             "Повторите попытку позже."
         )
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка всех сообщений — нейтральный стиль."""
     if not update.message or not update.message.text:
@@ -416,6 +453,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
 
+
 def main():
     try:
         init_config()
@@ -432,6 +470,7 @@ def main():
 
     logger.info("🚀 Бот запущен. Готов к работе.")
     app.run_polling()
+
 
 if __name__ == '__main__':
     main()
