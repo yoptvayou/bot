@@ -84,12 +84,12 @@ class GoogleServices:
     """Инкапсуляция Google API сервисов."""
     _instance = None
     _initialized = False
-
+    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-
+    
     def __init__(self):
         if not self._initialized:
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
@@ -100,7 +100,7 @@ class FileManager:
     """Работа с файлами и папками на Google Диске."""
     def __init__(self, drive_service):
         self.drive = drive_service
-
+    
     def find_folder(self, parent_id: str, name: str) -> Optional[str]:
         """Найти папку по имени."""
         query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
@@ -116,7 +116,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска папки '{name}' в {parent_id}: {e}")
             return None
-
+    
     def find_file(self, folder_id: str, filename: str) -> Optional[str]:
         """Найти файл в папке."""
         query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
@@ -133,7 +133,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска файла '{filename}' в {folder_id}: {e}")
             return None
-
+    
     def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
         """Получает время последнего изменения файла на Google Drive."""
         try:
@@ -151,7 +151,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения времени изменения файла {file_id}: {e}")
             return None
-
+    
     def download_file(self, file_id: str, local_filename: str) -> bool:
         """Скачивает файл с Google Drive в локальный файл."""
         try:
@@ -169,7 +169,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка скачивания файла {file_id} в {local_filename}: {e}")
             return False
-
+    
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict[str, Any]]:
         """Получить список файлов и папок в указанной папке Google Drive."""
         try:
@@ -504,35 +504,6 @@ async def handle_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query
         if update.message:
             await update.message.reply_text("❌ Произошла ошибка при поиске данных.")
 
-async def handle_any_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик любого текстового сообщения, не являющегося командой или упоминанием."""
-    if not update.message or not update.message.text:
-        return
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    # Игнорируем команды и упоминания, так как они обрабатываются отдельно
-    if text.startswith('/') or re.match(rf'@{re.escape(context.bot.username)}\b', text, re.IGNORECASE):
-        return  # Пусть другие обработчики этим займутся
-    # Проверка, является ли пользователь разрешённым в личке
-    if update.message.chat.type == 'private':
-        username = update.effective_user.username
-        if not username or username not in ALLOWED_USERS:
-            await update.message.reply_text("Слышь, кожаный мешок, я переписываюсь в личке только с батей.")
-            logger.info(f"📤 Ответ 'Кожаный мешок' отправлен пользователю {user_id}")
-            return
-    logger.info(f"📥 Пользователь {user_id} отправил текст: '{text}'")
-    # Отправляем ответ "Кожаный ублюдок..."
-    response = (
-        "Кожаный ублюдок, ты что-то не то ввел.\n"
-        "Я понимаю только следующие команды:\n"
-        "• `/start` - начать работу со мной\n"
-        "• `/s 123456` - найти данные по номеру\n"
-        "• `/path` - показать содержимое корневой папки\n"
-        "Также ты можешь упомянуть меня в группе или канале: `@ваш_бот 123456`"
-    )
-    await update.message.reply_text(response, parse_mode='Markdown')
-    logger.info(f"📤 Ответ 'Кожаный ублюдок...' отправлен пользователю {user_id}")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка сообщений: команды и упоминания."""
     if not update.message or not update.message.text:
@@ -542,6 +513,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     is_command_s = text.startswith("/s")
     is_command_path = text.startswith("/path")
     is_mention = re.match(rf'@{re.escape(bot_username)}\b', text, re.IGNORECASE)
+    
     if is_command_path:
         await show_path(update, context)
     elif is_command_s or is_mention:
@@ -552,7 +524,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await handle_query(update, context, query)
     elif text.startswith('/'):
         await unknown_command(update, context)
-    # Обработка любого другого текста перемещена в handle_any_text
 
 def main() -> None:
     """Главная функция запуска бота."""
@@ -562,23 +533,25 @@ def main() -> None:
         logger.critical(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
         print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
         return
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     # Обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
-    # Обработчик для неизвестных команд
-    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
-    # Обработчик для любого текста (должен быть ниже обработчиков команд)
-    # Обрабатывает личные сообщения, группы и каналы
+    
+    # Обработчик для команд
     app.add_handler(MessageHandler(
-        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE),
-        handle_any_text  # Используем новый обработчик
-    ))
-    # Обработчик для команд/упоминаний (тот же, что и раньше, но без части логики)
-    app.add_handler(MessageHandler(
-        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE),
+        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE) & filters.COMMAND,
         handle_message
     ))
+    
+    # Обработчик для упоминаний и команд в личке
+    app.add_handler(MessageHandler(
+        filters.TEXT & (filters.ChatType.CHANNEL | filters.ChatType.GROUPS | filters.ChatType.PRIVATE) & ~filters.COMMAND,
+        handle_message
+    ))
+    
     logger.info("🚀 Бот запущен. Поддержка: личка, группы, каналы (при упоминании).")
     logger.info(f"⚙️ Конфигурация: ROOT_FOLDER_YEAR={ROOT_FOLDER_YEAR}, CITY={CITY}, LOCAL_CACHE_DIR={LOCAL_CACHE_DIR}")
     app.run_polling()
