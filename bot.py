@@ -183,7 +183,12 @@ class FileManager:
         query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
         try:
             res = self.drive.files().list(q=query, fields="files(id)").execute()
-            return res['files'][0]['id'] if res['files'] else None
+            folder_id = res['files'][0]['id'] if res['files'] else None
+            if folder_id:
+                logger.info(f"🔍 Найдена папка: '{name}' (ID: {folder_id})")
+            else:
+                logger.debug(f"📁 Папка не найдена: '{name}' в родителе {parent_id}")
+            return folder_id
         except Exception as e:
             logger.error(f"❌ Ошибка поиска папки '{name}': {e}")
             return None
@@ -192,7 +197,12 @@ class FileManager:
         query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
         try:
             res = self.drive.files().list(q=query, fields="files(id)").execute()
-            return res['files'][0]['id'] if res['files'] else None
+            file_id = res['files'][0]['id'] if res['files'] else None
+            if file_id:
+                logger.info(f"📎 Найден файл: '{filename}' (ID: {file_id})")
+            else:
+                logger.debug(f"📄 Файл не найден: '{filename}' в папке {folder_id}")
+            return file_id
         except Exception as e:
             logger.error(f"❌ Ошибка поиска файла '{filename}': {e}")
             return None
@@ -215,10 +225,10 @@ class FileManager:
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
-            logger.info(f"✅ Файл {file_id} скачан в {local_path}")
+            logger.info(f"✅ Файл успешно скачан: ID={file_id}, путь={local_path}")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка скачивания {file_id}: {e}")
+            logger.error(f"❌ Ошибка при скачивании файла ID={file_id} в {local_path}: {e}")
             return False
 
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict]:
@@ -371,23 +381,34 @@ async def handle_search(update: Update, query: str):
             )
             return
 
+        logger.info(f"📁 Найден файл: {filename} (ID: {file_id}) от {used_date.strftime('%d.%m.%Y')}")
         local_file = os.path.join(LOCAL_CACHE_DIR, f"cache_{used_date.strftime('%Y%m%d')}.xlsm")
         drive_time = fm.get_file_modified_time(file_id)
         if not drive_time:
             await update.message.reply_text("Не удалось получить дату изменения файла.")
             return
 
-        # Проверка необходимости скачивания
+        # Логирование проверки кэша
+        logger.info(f"🕒 Время изменения файла в Google Drive: {drive_time.isoformat()}")
         download_needed = True
         if os.path.exists(local_file):
             local_time = datetime.fromtimestamp(os.path.getmtime(local_file), tz=timezone.utc)
+            logger.info(f"🕒 Локальное время файла: {local_time.isoformat()}")
             if drive_time <= local_time:
+                logger.info(f"✅ Кэш актуален. Скачивание не требуется: {local_file}")
                 download_needed = False
+            else:
+                logger.info(f"⚠️ Файл устарел. Требуется перезагрузка: {local_file}")
+        else:
+            logger.info(f"📥 Файл не найден в кэше. Будет загружен: {local_file}")
 
         if download_needed:
             if not fm.download_file(file_id, local_file):
                 await update.message.reply_text("Не удалось скачать файл с данными.")
                 return
+            logger.info(f"📥 Успешно загружен файл: {filename} → {local_file}")
+        else:
+            logger.info(f"📂 Используется кэшированный файл: {local_file}")
 
         results = lds.search_by_number(local_file, number)
         if not results:
