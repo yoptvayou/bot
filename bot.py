@@ -203,7 +203,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Доступные команды:\n"
         "• <code>/s 123456</code> — найти терминал по серийному номеру\n"
         "• <code>/path</code> — показать содержимое корневой папки\n"
-        "• <code>@ваш_бот 123456</code> — вызвать поиск по упоминанию",
+        "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
+        "• <code>@Sklad_bot 123456</code> — вызвать поиск по упоминанию",
         parse_mode='HTML'
     )
 
@@ -533,15 +534,16 @@ async def handle_search(update: Update, query: str):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка всех сообщений — нейтральный стиль."""
+    """Обработка сообщений: только команды и упоминания в чатах."""
     if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
     bot_username = context.bot.username.lower()
+    chat_type = update.message.chat.type
 
-    # Проверка доступа в личке
-    if update.message.chat.type == 'private':
+    # В личных чатах — обрабатываем всё (если доступ разрешён)
+    if chat_type == 'private':
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
@@ -549,52 +551,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Обратитесь к администратору для получения прав."
             )
             return
-
-    # Команда /s
-    if text.startswith("/s"):
-        query = text[2:].strip()
-        if not query:
+        # Обработка как раньше
+        if text.startswith("/s"):
+            query = text[2:].strip()
+            if not query:
+                await update.message.reply_text(
+                    "Укажите серийный номер после команды.\n"
+                    "Пример: <code>/s AB123456</code>",
+                    parse_mode='HTML'
+                )
+                return
+            await handle_search(update, query)
+            return
+        elif text.startswith('/'):
             await update.message.reply_text(
-                "Укажите серийный номер после команды.\n"
-                "Пример: <code>/s AB123456</code>",
+                "Неизвестная команда.\n"
+                "Доступные команды:\n"
+                "• <code>/s СН</code> — найти терминал по серийному номеру\n"
+                "• <code>/path</code> — показать содержимое корневой папки\n"
+                "• <code>/reload_lists</code> — перезагрузить списки доступа",
                 parse_mode='HTML'
             )
-            return
-        await handle_search(update, query)
-        return
-
-    # Упоминание бота
-    mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
-    if mention_match:
-        query = mention_match.group(1).strip()
-        if not query:
+        else:
             await update.message.reply_text(
-                "Укажите серийный номер после упоминания бота.\n"
-                "Пример: @ваш_бот AB123456",
+                "Используйте:\n"
+                "• <code>/s СН</code> — найти терминал по серийному номеру\n"
+                "• <code>/path</code> — показать содержимое корневой папки\n"
+                "• <code>/reload_lists</code> — перезагрузить списки доступа",
                 parse_mode='HTML'
             )
-            return
-        await handle_search(update, query)
         return
 
-    # Неизвестная команда
-    if text.startswith('/'):
-        await update.message.reply_text(
-            "Неизвестная команда.\n"
-            "Доступные команды:\n"
-            "• <code>/s 123456</code> — поиск терминала\n"
-            "• <code>/path</code> — просмотр папки\n"
-            "• <code>@ваш_бот 123456</code> — быстрый поиск",
-            parse_mode='HTML'
-        )
-    else:
-        await update.message.reply_text(
-            "Я не понимаю этот запрос.\n"
-            "Используйте:\n"
-            "• <code>/s СН</code> — поиск по серийному номеру\n"
-            "• Упомяните меня: <code>@ваш_бот СН</code>",
-            parse_mode='HTML'
-        )
+    # В групповых чатах (group/supergroup) — только команды и упоминания
+    if chat_type in ['group', 'supergroup']:
+        # Проверяем, является ли сообщение командой (всё ещё нужно, чтобы /s работал)
+        if text.startswith("/s"):
+            # Проверим, адресована ли команда именно этому боту: /s@Sklad_bot
+            if f"@{bot_username}" in text.split()[0] or not ' ' in text:  # /s@bot или /s текст
+                query = re.sub(r'^/s(?:@[\w_]+)?\s*', '', text).strip()
+                if not query:
+                    await update.message.reply_text(
+                        "Укажите серийный номер после команды.\n"
+                        "Пример: <code>/s AB123456</code>",
+                        parse_mode='HTML'
+                    )
+                    return
+                await handle_search(update, query)
+                return
+            else:
+                # Это команда /s, но не для нас — игнорируем
+                return
+
+        # Проверяем упоминание: @Sklad_bot ...
+        mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
+        if mention_match:
+            query = mention_match.group(1).strip()
+            if not query:
+                await update.message.reply_text(
+                    "Укажите серийный номер после упоминания бота.\n"
+                    "Пример: @Sklad_bot AB123456",
+                    parse_mode='HTML'
+                )
+                return
+            await handle_search(update, query)
+            return
+
+        # Все остальные сообщения — игнорируем
+        return
 
 
 def main():
@@ -615,8 +638,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
     app.add_handler(CommandHandler("reload_lists", reload_lists))  # Новая команда
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     logger.info("🚀 Бот запущен. Готов к работе.")
     app.run_polling()
