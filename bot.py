@@ -37,8 +37,10 @@ TELEGRAM_TOKEN: str = ""
 PARENT_FOLDER_ID: str = ""
 TEMP_FOLDER_ID: str = ""
 ROOT_FOLDER_YEAR: str = ""
+BLACKLIST_FILE_ID: str = ""
+WHITELIST_FILE_ID: str = ""
 
-# --- Разрешённые пользователи ---
+# --- Разрешённые пользователи (администраторы) ---
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
 
 
@@ -62,17 +64,21 @@ def get_credentials_path() -> str:
 
 def init_config():
     """Инициализация конфигурации."""
-    global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR
+    global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR, BLACKLIST_FILE_ID, WHITELIST_FILE_ID
     CREDENTIALS_FILE = get_credentials_path()
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
     PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
     TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
+    BLACKLIST_FILE_ID = os.getenv("BLACKLIST_FILE_ID", "")
+    WHITELIST_FILE_ID = os.getenv("WHITELIST_FILE_ID", "")
     ROOT_FOLDER_YEAR = str(datetime.now().year)
 
-    if not TELEGRAM_TOKEN or not PARENT_FOLDER_ID:
+    if not TELEGRAM_TOKEN or not PARENT_FOLDER_ID or not BLACKLIST_FILE_ID or not WHITELIST_FILE_ID:
         missing = []
         if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
         if not PARENT_FOLDER_ID: missing.append("PARENT_FOLDER_ID")
+        if not BLACKLIST_FILE_ID: missing.append("BLACKLIST_FILE_ID")
+        if not WHITELIST_FILE_ID: missing.append("WHITELIST_FILE_ID")
         raise RuntimeError(f"❌ Отсутствуют переменные окружения: {', '.join(missing)}")
 
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
@@ -89,6 +95,81 @@ class GoogleServices:
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
+
+# Глобальные переменные
+access_manager: Optional[AccessManager] = None
+
+import io  # Убедитесь, что импортирован
+
+class AccessManager:
+    """Управление доступом: чёрный/белый списки по username."""
+    def __init__(self, drive_service):
+        self.drive = drive_service
+        self.blacklist = set()
+        self.whitelist = set()
+
+    def download_list(self, file_id: str) -> List[str]:
+        """Скачивает файл и возвращает список username (без @, в нижнем регистре)."""
+        try:
+            request = self.drive.files().get_media(fileId=file_id)
+            file_data = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_data, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            file_data.seek(0)
+            content = file_data.read().decode('utf-8')
+            # Очищаем: удаляем @, приводим к нижнему регистру, убираем пробелы
+            usernames = []
+            for line in content.splitlines():
+                cleaned = line.strip().lower().replace('@', '')
+                if cleaned:
+                    usernames.append(cleaned)
+            return usernames
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки списка из файла {file_id}: {e}")
+            return []
+
+    def update_lists(self):
+        """Загружает чёрный и белый списки."""
+        if WHITELIST_FILE_ID:
+            self.whitelist = set(self.download_list(WHITELIST_FILE_ID))
+            logger.info(f"✅ Загружен белый список: {len(self.whitelist)} пользователей")
+        else:
+            logger.warning("⚠️ WHITELIST_FILE_ID не задан — белый список пуст")
+
+        if BLACKLIST_FILE_ID:
+            self.blacklist = set(self.download_list(BLACKLIST_FILE_ID))
+            logger.info(f"✅ Загружен чёрный список: {len(self.blacklist)} пользователей")
+        else:
+            logger.warning("⚠️ BLACKLIST_FILE_ID не задан — чёрный список пуст")
+
+    def is_allowed(self, username: str) -> bool:
+        """
+        Проверка доступа по username:
+        - Администраторы (ALLOWED_USERS) всегда допущены
+        - Чёрный список: приоритет выше
+        - Белый список: если задан — только он решает
+        """
+        if not username:
+            return False
+
+        username_lower = username.lower()
+
+        # Администраторы всегда имеют доступ
+        if username_lower in {u.lower() for u in ALLOWED_USERS}:
+            return True
+
+        # Чёрный список — запрещает доступ, даже если в белом
+        if username_lower in self.blacklist:
+            return False
+
+        # Если белый список активен — только он определяет доступ
+        if self.whitelist and username_lower not in self.whitelist:
+            return False
+
+        # Если белый список пуст — разрешаем всех, кроме чёрного
+        return True
 
 
 def extract_number(query: str) -> Optional[str]:
@@ -130,15 +211,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать содержимое папки — нейтральный стиль."""
-    if not update.message:
-        return
-    user = update.effective_user
-    if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
-        await update.message.reply_text(
-            "Доступ ограничен.\n"
-            "Обратитесь к администратору для получения прав."
-        )
-        return
+        if update.message.chat.type == 'private':
+        user = update.effective_user
+        if not user.username or not access_manager.is_allowed(user.username):
+            await update.message.reply_text(
+                "Доступ ограничен.\n"
+                "Обратитесь к администратору для получения прав."
+            )
+            return
 
     try:
         gs = GoogleServices()
@@ -172,6 +252,28 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Произошла ошибка при получении списка файлов.\n"
             "Попробуйте позже."
         )
+
+async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезагрузка чёрного и белого списков (только для администраторов)."""
+    if not update.message or not update.effective_user:
+        return
+
+    user = update.effective_user
+    if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+
+    if not access_manager:
+        await update.message.reply_text("❌ Система доступа не инициализирована.")
+        return
+
+    access_manager.update_lists()
+    await update.message.reply_text(
+        f"✅ Списки успешно перезагружены.\n"
+        f"Белый список: {len(access_manager.whitelist)} пользователей\n"
+        f"Чёрный список: {len(access_manager.blacklist)} пользователей"
+    )
+    logger.info(f"🔄 Администратор {user.username} перезагрузил списки доступа.")
 
 
 class FileManager:
@@ -320,15 +422,14 @@ class LocalDataSearcher:
 
 async def handle_search(update: Update, query: str):
     """Общая логика поиска — нейтральный стиль."""
-    if not update.message:
-        return
-    user = update.effective_user
-    if update.message.chat.type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
-        await update.message.reply_text(
-            "Доступ ограничен.\n"
-            "Обратитесь к администратору для получения прав."
-        )
-        return
+           if update.message.chat.type == 'private':
+        user = update.effective_user
+        if not user.username or not access_manager.is_allowed(user.username):
+            await update.message.reply_text(
+                "Доступ ограничен.\n"
+                "Обратитесь к администратору для получения прав."
+            )
+            return
 
     number = extract_number(query)
     if not number:
@@ -440,6 +541,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     bot_username = context.bot.username.lower()
 
+    # Проверка доступа в личке
+    if update.message.chat.type == 'private':
+        user = update.effective_user
+        if not user.username or not access_manager.is_allowed(user.username.lower()):
+            await update.message.reply_text(
+                "Доступ ограничен.\n"
+                "Обратитесь к администратору для получения прав."
+            )
+            return
+
+    # Команда /s
     if text.startswith("/s"):
         query = text[2:].strip()
         if not query:
@@ -452,6 +564,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_search(update, query)
         return
 
+    # Упоминание бота
     mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
     if mention_match:
         query = mention_match.group(1).strip()
@@ -465,12 +578,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_search(update, query)
         return
 
+    # Неизвестная команда
     if text.startswith('/'):
         await update.message.reply_text(
+            "Неизвестная команда.\n"
             "Доступные команды:\n"
             "• <code>/s 123456</code> — поиск терминала\n"
             "• <code>/path</code> — просмотр папки\n"
             "• <code>@ваш_бот 123456</code> — быстрый поиск",
+            parse_mode='HTML'
+        )
+    else:
+        await update.message.reply_text(
+            "Я не понимаю этот запрос.\n"
+            "Используйте:\n"
+            "• <code>/s СН</code> — поиск по серийному номеру\n"
+            "• Упомяните меня: <code>@ваш_бот СН</code>",
             parse_mode='HTML'
         )
 
@@ -484,8 +607,15 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Инициализация AccessManager
+    global access_manager
+    gs = GoogleServices()
+    access_manager = AccessManager(gs.drive)
+    access_manager.update_lists()  # Загружаем списки при старте
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
+    app.add_handler(CommandHandler("reload_lists", reload_lists))  # Новая команда
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.COMMAND, handle_message))
 
