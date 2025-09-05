@@ -205,7 +205,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
-            "• <code>@Sklad_bot 123456</code> — крикни в рацию, я найду\n",
+            "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n",
             parse_mode='HTML'
     )
 
@@ -439,12 +439,10 @@ async def handle_search(update: Update, query: str):
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
-            await update.message.reply_text(
                 "Ты чё, братан, по пьяни печатаешь?\n"
                 "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
                 "Попробуй ещё раз, а то выкину в реку.\n",
-                parse_mode='HTML'
-            )
+                parse_mode='HTML'            
         )
         return
 
@@ -525,7 +523,7 @@ async def handle_search(update: Update, query: str):
         if not results:
             await update.message.reply_text(
                 f"Терминал с СН <code>{number}</code>?\n"
-                "Нету. Ни в базе, ни в подвале, ни в багажнике 'Бэхи'.\n"
+                "Нету. Ни в базе, ни в подвале, ни в багажнике 'Весты'.\n"
                 "Может, он уже в металлоломе... или ты втираешь очки?\n",
                 parse_mode='HTML'
                 )
@@ -569,7 +567,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = text[2:].strip()
             if not query:
                 await update.message.reply_text(
-                    "Укажите серийный номер после команды.\n"
+                    "Укажи серийный номер после команды.\n"
                     "Пример: <code>/s AB123456</code>",
                     parse_mode='HTML'
                 )
@@ -604,7 +602,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query = re.sub(r'^/s(?:@[\w_]+)?\s*', '', text).strip()
                 if not query:
                     await update.message.reply_text(
-                        "Укажите серийный номер после команды.\n"
+                        "Укажи серийный номер после команды.\n"
                         "Пример: <code>/s AB123456</code>",
                         parse_mode='HTML'
                     )
@@ -621,7 +619,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = mention_match.group(1).strip()
             if not query:
                 await update.message.reply_text(
-                    "Укажите серийный номер после упоминания бота.\n"
+                    "Укажи серийный номер после упоминания бота.\n"
                     "Пример: @Sklad_bot AB123456",
                     parse_mode='HTML'
                 )
