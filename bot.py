@@ -266,7 +266,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.message.chat.type
     if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
         await update.message.reply_text(
-            "Ты кто такой, а?\n"
+            "Ты кто такой, дядя?\n"
             "Не в списке — не входи.\n"
             "Хочешь доступ — плати бабки или лежи в багажнике до утра."
         )
@@ -326,7 +326,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка /path: {e}")
         await update.message.reply_text(
             "Произошла ошибка при получении списка файлов.\n"
-            "Попробуйте позже."
+            "Попробуй позже."
         )
 
 async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -444,52 +444,50 @@ class LocalDataSearcher:
 
                 equipment_type = str(row[4]).strip() if row[4] else "Не указано"
                 model = str(row[6]).strip() if row[6] else "Не указано"
-                request_num = str(row[7]).strip() if row[7] else "Не указано"
-
-                # Регистронезависимая обработка статусов
-                raw_status = str(row[8]) if row[8] else ""
-                status = raw_status.strip()
-                status_lower = status.lower()
-
+                status = str(row[8]).strip() if row[8] else "Не указано"
                 storage = str(row[13]).strip() if row[13] else "Не указано"
-
-                raw_issue_status = str(row[14]) if row[14] else ""
-                issue_status = raw_issue_status.strip()
-                issue_status_lower = issue_status.lower()
-
+                issue_status = str(row[14]).strip() if row[14] else ""
                 engineer = str(row[15]).strip() if row[15] else "Не указано"
                 issue_date = str(row[16]).strip() if row[16] else "Не указано"
+                request_num = str(row[7]).strip() if row[7] else "Не указано"
 
-                # Логируем для отладки
-                logger.info(f"Найден СН {sn}: статус='{status}', выдан='{issue_status}', место='{storage}'")
+                # Регистронезависимые проверки
+                status_lower = status.lower()
+                issue_status_lower = issue_status.lower()
 
-                # Формируем базовый ответ
+                # Формируем базовые поля
                 response_parts = [
                     f"<b>СН:</b> <code>{sn}</code>",
                     f"<b>Тип оборудования:</b> <code>{equipment_type}</code>",
                     f"<b>Модель терминала:</b> <code>{model}</code>",
-                    f"<b>Статус оборудования:</b> <code>{status}</code>"
                 ]
 
-                # Показываем место на складе, если:
-                # - На складе
-                # - Не работоспособно / Выведено из эксплуатации
-                # - Зарезервировано и выдан — тоже показываем место
+                # --- Логика по статусу ---
                 if status_lower == "на складе":
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
                     response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
-                elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
-                elif status_lower == "зарезервировано" and issue_status_lower == "выдан":
-                    response_parts = [
-                        f"💀 <b>СН:</b> <code>{sn}</code>",
-                        f"<b>Тип:</b> <code>{equipment_type}</code>",
-                        f"<b>Модель:</b> <code>{model}</code>",
-                        f"<b>Статус:</b> <code>{status}</code> — как труп в багажнике",
-                        f"<b>Место:</b> <code>{storage}</code> — можно разобрать на запчасти"
-                    ]
-                    result_text = "🗑 <b>Отработал своё</b>" + "".join(response_parts)
 
-                result_text = "ℹ️ <b>Информация о терминале</b>\n" + "\n".join(response_parts)
+                elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code> — как труп в багажнике")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code> — можно разобрать на запчасти")
+
+                elif status_lower == "зарезервировано":
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
+                    if issue_status_lower == "выдан":
+                        # Показываем всё: место, инженера, дату
+                        response_parts.append(f"<b>Заявка:</b> <code>{request_num}</code>")
+                        response_parts.append(f"<b>Выдан инженеру:</b> <code>{engineer}</code>")
+                        response_parts.append(f"<b>Дата выдачи:</b> <code>{issue_date}</code>")
+                    # Если не выдан — ничего больше не добавляем
+
+                else:
+                    # Все остальные статусы: просто показываем статус
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
+                    # Можно добавить место, если нужно, но по ТЗ — не требуется
+
+                # Формируем итоговый текст
+                header = "ℹ️ <b>Информация о терминале</b>"
+                result_text = header + "\n" + "\n".join(response_parts)
                 results.append(result_text)
 
             wb.close()
@@ -504,7 +502,7 @@ async def handle_search(update: Update, query: str):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
-                "Ты кто такой, а?\n"
+                "Ты кто такой, дядя?\n"
                 "Не в списке — не входи.\n"
                 "Хочешь доступ — плати бабки или лежи в багажнике до утра."
             )
@@ -612,7 +610,7 @@ async def handle_search(update: Update, query: str):
             await update.message.reply_text(
                 f"Терминал с СН <code>{number}</code>?\n"
                 "Нету. Ни в базе, ни в подвале, ни в багажнике 'Весты'.\n"
-                "Может, он уже в металлоломе... или ты втираешь очки?\n",
+                "Может, он уже в металлоломе... или ты втираешь мне очки?\n",
                 parse_mode='HTML'
             )
             return
@@ -660,7 +658,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
-                "Ты кто такой, а?\n"
+                "Ты кто такой, дядя?\n"
                 "Не в списке — не входи.\n"
                 "Хочешь доступ — плати бабки или лежи в багажнике до утра."
             )
@@ -688,7 +686,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.message.reply_text(
-                "Используйте:\n"
+                "Используй:\n"
                 "• <code>/s СН</code> — найти терминал по серийному номеру\n"
                 "• <code>/path</code> — показать содержимое корневой папки\n"
                 "• <code>/reload_lists</code> — перезагрузить списки доступа",
