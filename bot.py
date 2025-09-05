@@ -186,26 +186,29 @@ def extract_number(query: str) -> Optional[str]:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие — нейтральный стиль."""
     if not update.message:
         return
     user = update.effective_user
     chat_type = update.message.chat.type
     if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
         await update.message.reply_text(
-            "Доступ ограничен.\n"
-            "Обратитесь к администратору для получения прав."
+            "Ты кто такой, а?\n"
+            "Не в списке — не входи.\n"
+            "Хочешь доступ — плати бабки или лежи в багажнике до утра."
         )
         return
 
     await update.message.reply_text(
-        "Добро пожаловать.\n"
-        "Доступные команды:\n"
-        "• <code>/s 123456</code> — найти терминал по серийному номеру\n"
-        "• <code>/path</code> — показать содержимое корневой папки\n"
-        "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
-        "• <code>@Sklad_bot 123456</code> — вызвать поиск по упоминанию",
-        parse_mode='HTML'
+        await update.message.reply_text(
+            "О, смотри-ка — гость на складе!\n"
+            "Только не стой как лох у контейнера — говори, что надо.\n"
+            ""
+            "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
+            "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
+            "• <code>/reload_lists</code> — обновить список предателей и своих\n"
+            "• <code>@Sklad_bot 123456</code> — крикни в рацию, я найду\n",
+            parse_mode='HTML'
+        )
     )
 
 
@@ -215,8 +218,9 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username):
             await update.message.reply_text(
-                "Доступ ограничен.\n"
-                "Обратитесь к администратору для получения прав."
+                "Ты кто такой, а?\n"
+                "Не в списке — не входи.\n"
+                "Хочешь доступ — плати бабки или лежи в багажнике до утра."
             )
             return
 
@@ -228,7 +232,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = f"🗂 <b>Корневая папка</b> (ID: <code>{root_id}</code>)\n"
         if not items:
-            text += "Содержимое отсутствует."
+            text += "Здесь даже паук не селится — пусто."
         else:
             folders = [i for i in items if i['mimeType'] == 'application/vnd.google-apps.folder']
             files = [i for i in items if i['mimeType'] != 'application/vnd.google-apps.folder']
@@ -404,12 +408,14 @@ class LocalDataSearcher:
                 elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
                     response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
                 elif status_lower == "зарезервировано" and issue_status_lower == "выдан":
-                    response_parts.extend([
-                        f"<b>Номер заявки:</b> <code>{request_num}</code>",
-                        f"<b>Выдан инженеру:</b> <code>{engineer}</code>",
-                        f"<b>Дата выдачи:</b> <code>{issue_date}</code>",
-                        f"<b>Место на складе:</b> <code>{storage}</code>"
-                    ])
+                    response_parts = [
+                        f"💀 <b>СН:</b> <code>{sn}</code>",
+                        f"<b>Тип:</b> <code>{equipment_type}</code>",
+                        f"<b>Модель:</b> <code>{model}</code>",
+                        f"<b>Статус:</b> <code>{status}</code> — как труп в багажнике",
+                        f"<b>Место:</b> <code>{storage}</code> — можно разобрать на запчасти"
+                    ]
+                    result_text = "🗑 <b>Отработал своё</b>" + "".join(response_parts)
 
                 result_text = "ℹ️ <b>Информация о терминале</b>\n" + "\n".join(response_parts)
                 results.append(result_text)
@@ -426,21 +432,26 @@ async def handle_search(update: Update, query: str):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username):
             await update.message.reply_text(
-                "Доступ ограничен.\n"
-                "Обратитесь к администратору для получения прав."
+                "Ты кто такой, а?\n"
+                "Не в списке — не входи.\n"
+                "Хочешь доступ — плати бабки или лежи в багажнике до утра."
             )
             return
 
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
-            "Некорректный формат номера.\n"
-            "Введите серийный номер в формате: AB123456 (без пробелов и спецсимволов).",
-            parse_mode='HTML'
+            await update.message.reply_text(
+                "Ты чё, братан, по пьяни печатаешь?\n"
+                "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
+                "Попробуй ещё раз, а то выкину в реку.\n",
+                parse_mode='HTML'
+            )
         )
         return
 
-    await update.message.reply_text(f"🔍 Поиск терминала: <code>{number}</code>...", parse_mode='HTML')
+    await update.message.reply_text(f"🔍 Копаю в архивах... Где-то был этот <code>{number}</code>...\n"
+                                     "Если не спёрли, как в прошлый раз — найду.", parse_mode='HTML')
 
     try:
         gs = GoogleServices()
@@ -477,9 +488,10 @@ async def handle_search(update: Update, query: str):
 
         if not file_id:
             await update.message.reply_text(
-                "Файл с данными не найден.\n"
-                "Возможно, данные ещё не загружены за указанный период."
-            )
+                "Архивы пусты, брат.\n"
+                "Либо файл сожгли, либо его ещё не подкинули.\n"
+                "Приходи завтра — может, кто-нибудь не сдохнет и загрузит.\n"
+                )
             return
 
         logger.info(f"📁 Найден файл: {filename} (ID: {file_id}) от {used_date.strftime('%d.%m.%Y')}")
@@ -514,10 +526,11 @@ async def handle_search(update: Update, query: str):
         results = lds.search_by_number(local_file, number)
         if not results:
             await update.message.reply_text(
-                f"Терминал с СН <code>{number}</code> не найден в базе данных.\n"
-                "Проверьте правильность ввода или обратитесь к администратору.",
+                f"Терминал с СН <code>{number}</code>?\n"
+                "Нету. Ни в базе, ни в подвале, ни в багажнике 'Бэхи'.\n"
+                "Может, он уже в металлоломе... или ты втираешь очки?\n",
                 parse_mode='HTML'
-            )
+                )
             return
 
         for result in results:
@@ -528,9 +541,10 @@ async def handle_search(update: Update, query: str):
     except Exception as e:
         logger.error(f"❌ Ошибка поиска: {e}", exc_info=True)
         await update.message.reply_text(
-            "Произошла ошибка при выполнении поиска.\n"
-            "Повторите попытку позже."
-        )
+            "Блять, опять глючит!\n"
+            "То сервер падает, то бот тупит...\n"
+            "Повтори запрос, а не то закрою тебя в контейнере на сутки."
+            )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -547,8 +561,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
-                "Доступ ограничен.\n"
-                "Обратитесь к администратору для получения прав."
+                "Ты кто такой, а?\n"
+                "Не в списке — не входи.\n"
+                "Хочешь доступ — плати бабки или лежи в багажнике до утра."
             )
             return
         # Обработка как раньше
