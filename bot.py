@@ -39,6 +39,10 @@ TEMP_FOLDER_ID: str = ""
 ROOT_FOLDER_YEAR: str = ""
 BLACKLIST_FILE_ID: str = ""
 WHITELIST_FILE_ID: str = ""
+LAST_FILE_ID: Optional[str] = None
+LAST_FILE_DATE: Optional[datetime] = None
+LAST_FILE_DRIVE_TIME: Optional[datetime] = None
+LAST_FILE_LOCAL_PATH: Optional[str] = None
 
 # --- Разрешённые пользователи (администраторы) ---
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
@@ -170,6 +174,76 @@ class AccessManager:
 
 # Глобальные переменные
 access_manager: Optional[AccessManager] = None
+
+def preload_latest_file():
+    """При старте бота ищет и загружает последний файл из архива."""
+    global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
+
+    gs = GoogleServices()
+    fm = FileManager(gs.drive)
+    today = datetime.now()
+
+    logger.info("🔍 Поиск последнего файла при старте бота...")
+
+    for days_back in range(31):
+        target_date = today - timedelta(days=days_back)
+        filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
+
+        # Поиск по структуре папок: акты → месяц → день
+        acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
+        if not acts:
+            continue
+
+        month_num = target_date.month
+        month_name = ["январь", "февраль", "март", "апрель", "май", "июнь",
+                      "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][month_num - 1]
+        month_folder = fm.find_folder(acts, f"{target_date.strftime('%m')} - {month_name}")
+        if not month_folder:
+            continue
+
+        date_folder = fm.find_folder(month_folder, target_date.strftime('%d%m%y'))
+        if not date_folder:
+            continue
+
+        file_id = fm.find_file(date_folder, filename)
+        if file_id:
+            drive_time = fm.get_file_modified_time(file_id)
+            if not drive_time:
+                continue
+
+            local_path = os.path.join(LOCAL_CACHE_DIR, f"cache_{target_date.strftime('%Y%m%d')}.xlsm")
+
+            # Загружаем, если файла нет или он устарел
+            download_needed = True
+            if os.path.exists(local_path):
+                local_time = datetime.fromtimestamp(os.path.getmtime(local_path), tz=timezone.utc)
+                if drive_time <= local_time:
+                    download_needed = False
+
+            if download_needed:
+                logger.info(f"📥 Скачивание файла при старте: {filename} → {local_path}")
+                if not fm.download_file(file_id, local_path):
+                    logger.error("❌ Не удалось скачать файл при старте.")
+                    continue
+                logger.info(f"✅ Файл успешно загружен при старте: {local_path}")
+            else:
+                logger.info(f"✅ Используем существующий кэш: {local_path}")
+
+            # Сохраняем метаданные
+            LAST_FILE_ID = file_id
+            LAST_FILE_DATE = target_date
+            LAST_FILE_DRIVE_TIME = drive_time
+            LAST_FILE_LOCAL_PATH = local_path
+
+            logger.info(f"📁 Предзагружен файл: {filename} (ID: {file_id}) от {target_date.strftime('%d.%m.%Y')}")
+            return
+
+    # Если не нашли файл за 30 дней
+    logger.warning("⚠️ Не удалось найти актуальный файл при старте.")
+    LAST_FILE_ID = None
+    LAST_FILE_DATE = None
+    LAST_FILE_DRIVE_TIME = None
+    LAST_FILE_LOCAL_PATH = None
 
 def extract_number(query: str) -> Optional[str]:
     """
@@ -425,10 +499,10 @@ class LocalDataSearcher:
 
 
 async def handle_search(update: Update, query: str):
-    """Общая логика поиска — нейтральный стиль."""
+    """Общая логика поиска — использует предзагруженный файл, проверяет обновления."""
     if update.message.chat.type == 'private':
         user = update.effective_user
-        if not user.username or not access_manager.is_allowed(user.username):
+        if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
                 "Ты кто такой, а?\n"
                 "Не в списке — не входи.\n"
@@ -439,108 +513,137 @@ async def handle_search(update: Update, query: str):
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
-                "Ты чё, братан, по пьяни печатаешь?\n"
-                "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
-                "Попробуй ещё раз, а то выкину в реку.\n",
-                parse_mode='HTML'            
+            "Ты чё, братан, по пьяни печатаешь?\n"
+            "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
+            "Попробуй ещё раз, а то выкину в реку.\n",
+            parse_mode='HTML'
         )
         return
 
-    await update.message.reply_text(f"🔍 Копаю в архивах... Где-то был этот <code>{number}</code>...\n"
-                                     "Если не спёрли, как в прошлый раз — найду.", parse_mode='HTML')
-
+    # Отправляем промежуточное сообщение
     try:
-        gs = GoogleServices()
-        fm = FileManager(gs.drive)
-        lds = LocalDataSearcher()
-        today = datetime.now()
-        file_id = None
-        used_date = None
+        await update.message.reply_text(
+            f"🔍 Копаю в архивах... Где-то был этот <code>{number}</code>...\n"
+            "Если не спёрли, как в прошлый раз — найду.",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.error(f"❌ Не удалось отправить статус-сообщение: {e}")
+        return
 
-        # Поиск файла за последние 30 дней
-        for days_back in range(31):
-            target_date = today - timedelta(days=days_back)
-            filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
+    global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
 
-            acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
-            if not acts:
-                continue
-
-            month_num = target_date.month
-            month_name = ["январь", "февраль", "март", "апрель", "май", "июнь",
-                          "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][month_num - 1]
-            month_folder = fm.find_folder(acts, f"{target_date.strftime('%m')} - {month_name}")
-            if not month_folder:
-                continue
-
-            date_folder = fm.find_folder(month_folder, target_date.strftime('%d%m%y'))
-            if not date_folder:
-                continue
-
-            file_id = fm.find_file(date_folder, filename)
-            if file_id:
-                used_date = target_date
-                break
-
-        if not file_id:
+    # Проверка: есть ли загруженный файл
+    if not LAST_FILE_ID or not LAST_FILE_LOCAL_PATH:
+        logger.warning("❌ Нет данных: файл не был предзагружен при старте.")
+        try:
             await update.message.reply_text(
                 "Архивы пусты, брат.\n"
                 "Либо файл сожгли, либо его ещё не подкинули.\n"
                 "Приходи завтра — может, кто-нибудь не сдохнет и загрузит.\n"
-                )
-            return
+            )
+        except Exception as e:
+            logger.error(f"❌ Не удалось отправить ответ об отсутствии файла: {e}")
+        return
 
-        logger.info(f"📁 Найден файл: {filename} (ID: {file_id}) от {used_date.strftime('%d.%m.%Y')}")
-        local_file = os.path.join(LOCAL_CACHE_DIR, f"cache_{used_date.strftime('%Y%m%d')}.xlsm")
-        drive_time = fm.get_file_modified_time(file_id)
-        if not drive_time:
-            await update.message.reply_text("Не удалось получить дату изменения файла.")
-            return
+    if not os.path.exists(LAST_FILE_LOCAL_PATH):
+        logger.warning(f"❌ Локальный файл не найден: {LAST_FILE_LOCAL_PATH}")
+        try:
+            await update.message.reply_text(
+                "Файл был, но теперь его нет.\n"
+                "Кто-то слил базу в канализацию или сервер сдох.\n"
+                "Жди, пока кто-то перезальёт."
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки сообщения: {e}")
+        return
 
-        # Логирование проверки кэша
-        logger.info(f"🕒 Время изменения файла в Google Drive: {drive_time.isoformat()}")
-        download_needed = True
-        if os.path.exists(local_file):
-            local_time = datetime.fromtimestamp(os.path.getmtime(local_file), tz=timezone.utc)
-            logger.info(f"🕒 Локальное время файла: {local_time.isoformat()}")
-            if drive_time <= local_time:
-                logger.info(f"✅ Кэш актуален. Скачивание не требуется: {local_file}")
-                download_needed = False
-            else:
-                logger.info(f"⚠️ Файл устарел. Требуется перезагрузка: {local_file}")
+    # Получаем актуальное время файла в Google Drive
+    try:
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+        current_drive_time = fm.get_file_modified_time(LAST_FILE_ID)
+        if not current_drive_time:
+            logger.warning(f"⚠️ Не удалось получить время изменения файла: {LAST_FILE_ID}")
+            # Продолжаем с кэшированным временем
         else:
-            logger.info(f"📥 Файл не найден в кэше. Будет загружен: {local_file}")
+            # Проверяем, нужно ли обновить
+            local_time = datetime.fromtimestamp(os.path.getmtime(LAST_FILE_LOCAL_PATH), tz=timezone.utc)
+            if LAST_FILE_DRIVE_TIME is None or current_drive_time > LAST_FILE_DRIVE_TIME:
+                logger.info(f"🔄 Файл в облаке новее ({current_drive_time.isoformat()} > {LAST_FILE_DRIVE_TIME}). Перезагрузка...")
+                try:
+                    if fm.download_file(LAST_FILE_ID, LAST_FILE_LOCAL_PATH):
+                        LAST_FILE_DRIVE_TIME = current_drive_time
+                        logger.info(f"✅ Файл обновлён: {LAST_FILE_LOCAL_PATH}")
+                    else:
+                        logger.error("❌ Не удалось перезагрузить обновлённый файл. Используем старую версию.")
+                        try:
+                            await update.message.reply_text(
+                                "Файл обновился, но я не смог его подтянуть.\n"
+                                "Работаю на старых данных — могут быть косяки."
+                            )
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка отправки предупреждения: {e}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при скачивании файла: {e}", exc_info=True)
+                    try:
+                        await update.message.reply_text(
+                            "Файл обновился, но я не смог его загрузить.\n"
+                            "Продолжаю работать на старых данных."
+                        )
+                    except Exception as e_inner:
+                        logger.error(f"❌ Ошибка отправки уведомления: {e_inner}")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при проверке обновления файла: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(
+                "Что-то сломалось при проверке актуальности базы.\n"
+                "Работаю на последних известных данных."
+            )
+        except Exception as e_inner:
+            logger.error(f"❌ Ошибка отправки сообщения: {e_inner}")
 
-        if download_needed:
-            if not fm.download_file(file_id, local_file):
-                await update.message.reply_text("Не удалось скачать файл с данными.")
-                return
-            logger.info(f"📥 Успешно загружен файл: {filename} → {local_file}")
-        else:
-            logger.info(f"📂 Используется кэшированный файл: {local_file}")
+    # Поиск по локальному файлу
+    try:
+        lds = LocalDataSearcher()
+        results = lds.search_by_number(LAST_FILE_LOCAL_PATH, number)
 
-        results = lds.search_by_number(local_file, number)
         if not results:
             await update.message.reply_text(
                 f"Терминал с СН <code>{number}</code>?\n"
                 "Нету. Ни в базе, ни в подвале, ни в багажнике 'Весты'.\n"
                 "Может, он уже в металлоломе... или ты втираешь очки?\n",
                 parse_mode='HTML'
-                )
+            )
             return
 
+        # Отправляем результаты
         for result in results:
-            if len(result) > 4096:
-                result = result[:4050] + "\n<i>... (обрезано)</i>"
-            await update.message.reply_text(result, parse_mode='HTML')
+            try:
+                if len(result) > 4096:
+                    truncated = result[:4050] + "\n<i>... (обрезано)</i>"
+                    await update.message.reply_text(truncated, parse_mode='HTML')
+                else:
+                    await update.message.reply_text(result, parse_mode='HTML')
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки результата: {e}")
+                try:
+                    await update.message.reply_text(
+                        "Нашёл терминал, но не могу показать — что-то сломалось.\n"
+                        "Попробуй позже или скажи админу."
+                    )
+                except Exception as e_inner:
+                    logger.error(f"❌ Ошибка отправки fallback-сообщения: {e_inner}")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка поиска: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Блять, опять глючит!\n"
-            "То сервер падает, то бот тупит...\n"
-            "Повтори запрос, а не то закрою тебя в контейнере на сутки."
+        logger.error(f"❌ Ошибка при поиске в Excel: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(
+                "База есть, но читать не могу — видимо, кто-то опять говнокод написал.\n"
+                "Попробуй позже."
             )
+        except Exception as e_inner:
+            logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -644,7 +747,8 @@ def main():
     global access_manager
     gs = GoogleServices()
     access_manager = AccessManager(gs.drive)
-    access_manager.update_lists()  # Загружаем списки при старте
+    access_manager.update_lists() 
+    preload_latest_file()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path))
