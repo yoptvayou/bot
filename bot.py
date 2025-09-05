@@ -199,16 +199,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        await update.message.reply_text(
             "О, смотри-ка — гость на складе!\n"
             "Только не стой как лох у контейнера — говори, что надо.\n"
-            ""
+            "\n"
             "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
             "• <code>@Sklad_bot 123456</code> — крикни в рацию, я найду\n",
             parse_mode='HTML'
-        )
     )
 
 
