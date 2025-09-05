@@ -211,7 +211,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать содержимое папки — нейтральный стиль."""
-        if update.message.chat.type == 'private':
+    if update.message.chat.type == 'private':
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username):
             await update.message.reply_text(
@@ -422,7 +422,7 @@ class LocalDataSearcher:
 
 async def handle_search(update: Update, query: str):
     """Общая логика поиска — нейтральный стиль."""
-           if update.message.chat.type == 'private':
+    if update.message.chat.type == 'private':
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username):
             await update.message.reply_text(
