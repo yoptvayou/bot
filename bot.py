@@ -96,9 +96,6 @@ class GoogleServices:
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
 
-# Глобальные переменные
-access_manager: Optional[AccessManager] = None
-
 import io  # Убедитесь, что импортирован
 
 class AccessManager:
@@ -171,6 +168,8 @@ class AccessManager:
         # Если белый список пуст — разрешаем всех, кроме чёрного
         return True
 
+# Глобальные переменные
+access_manager: Optional[AccessManager] = None
 
 def extract_number(query: str) -> Optional[str]:
     """
