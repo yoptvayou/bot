@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
 
 # --- Настройка логирования ---
+# Конфигурация логирования для отслеживания действий бота
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -30,58 +31,106 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- Конфигурация ---
+# Константа для города, используется в поиске файлов
 CITY = 'Воронеж'
+
+# Разрешения для Google Drive API
 SCOPES = ['https://www.googleapis.com/auth/drive']
+
+# Путь к директории для хранения локальных кэшированных файлов
 LOCAL_CACHE_DIR = "./local_cache"
 
 # --- Глобальные переменные ---
+# Путь к файлу учетных данных Google
 CREDENTIALS_FILE: str = ""
+# Токен Telegram бота
 TELEGRAM_TOKEN: str = ""
+# ID родительской папки в Google Drive
 PARENT_FOLDER_ID: str = ""
+# ID временной папки в Google Drive
+TEMP_FOLDER_ID: str = ""
+# ID корневой папки года в Google Drive
 ROOT_FOLDER_YEAR: str = ""
+# ID файла черного списка пользователей
 BLACKLIST_FILE_ID: str = ""
+# ID файла белого списка пользователей
 WHITELIST_FILE_ID: str = ""
+# ID последнего загруженного файла
 LAST_FILE_ID: Optional[str] = None
+# Дата последнего файла
 LAST_FILE_DATE: Optional[datetime] = None
+# Время последнего изменения файла в Google Drive
 LAST_FILE_DRIVE_TIME: Optional[datetime] = None
+# Локальный путь к последнему файлу
 LAST_FILE_LOCAL_PATH: Optional[str] = None
-executor = ThreadPoolExecutor(max_workers=4)  # Для параллелизма
+# Пул потоков для параллельной обработки
+executor = ThreadPoolExecutor(max_workers=4)
 
 # --- Разрешённые пользователи (администраторы) ---
+# Список пользователей с правами администратора
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
 
-# --- для предотвращения утечки данных ---
+# --- Функции для работы с учетными данными ---
 def get_credentials_path() -> str:
-    """Декодирует Google Credentials из переменной окружения."""
+    """
+    Декодирует Google Credentials из переменной окружения.
+    
+    Returns:
+        str: Путь к временному файлу с учетными данными
+        
+    Raises:
+        RuntimeError: Если переменная окружения GOOGLE_CREDS_BASE64 не найдена
+    """
+    # Получаем закодированные учетные данные из переменной окружения
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
     if not encoded:
         raise RuntimeError("GOOGLE_CREDS_BASE64 не найдена!")
+    
     try:
+        # Расшифровываем данные и сохраняем во временный файл
         decoded = base64.b64decode(encoded).decode('utf-8')
         creds = json.loads(decoded)
         temp_path = "temp_google_creds.json"
         with open(temp_path, 'w') as f:
             json.dump(creds, f)
         logger.info(f"✅ Учетные данные сохранены: {temp_path}")
-        # --- удаление временного файла при выходе ---
+        
+        # Регистрируем функцию для удаления временного файла при выходе
         atexit.register(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None)
         return temp_path
     except Exception as e:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
 
-
 def init_config():
-    """Инициализация конфигурации."""
+    """
+    Инициализация конфигурации бота из переменных окружения.
+    
+    Raises:
+        RuntimeError: Если не все необходимые переменные окружения установлены
+    """
     global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR, BLACKLIST_FILE_ID, WHITELIST_FILE_ID
+    
+    # Получаем путь к учетным данным
     CREDENTIALS_FILE = get_credentials_path()
+    
+    # Получаем токен Telegram бота
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+    
+    # Получаем ID родительской папки
     PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
+    
+    # Получаем ID временной папки
     TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
+    
+    # Получаем ID файлов черного и белого списков
     BLACKLIST_FILE_ID = os.getenv("BLACKLIST_FILE_ID", "")
     WHITELIST_FILE_ID = os.getenv("WHITELIST_FILE_ID", "")
+    
+    # Устанавливаем год для корневой папки
     ROOT_FOLDER_YEAR = str(datetime.now().year)
 
+    # Проверяем наличие всех необходимых переменных
     if not TELEGRAM_TOKEN or not PARENT_FOLDER_ID or not BLACKLIST_FILE_ID or not WHITELIST_FILE_ID:
         missing = []
         if not TELEGRAM_TOKEN: missing.append("TELEGRAM_TOKEN")
@@ -90,44 +139,84 @@ def init_config():
         if not WHITELIST_FILE_ID: missing.append("WHITELIST_FILE_ID")
         raise RuntimeError(f"❌ Отсутствуют переменные окружения: {', '.join(missing)}")
 
+    # Создаем директорию для кэширования
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
     logger.info(f"📁 Локальный кэш: {os.path.abspath(LOCAL_CACHE_DIR)}")
 
-
+# --- Класс для работы с Google API ---
 class GoogleServices:
-    """Google API."""
+    """
+    Singleton класс для работы с Google Drive API.
+    
+    Этот класс обеспечивает единственный экземпляр соединения с Google Drive API,
+    что позволяет избежать многократного создания соединений.
+    """
+    
+    # Статический атрибут для хранения экземпляра класса
     _instance = None
 
     def __new__(cls):
+        """
+        Переопределение метода __new__ для реализации паттерна Singleton.
+        
+        Returns:
+            GoogleServices: Единственный экземпляр класса
+        """
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            # Создаем учетные данные из файла
             creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+            # Инициализируем сервис Google Drive
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
 
-
-
+# --- Класс управления доступом ---
 class AccessManager:
-    """Управление доступом: чёрный/белый списки по username."""
+    """
+    Класс для управления доступом пользователей через черный и белый списки.
+    
+    Осуществляет проверку доступа пользователей к функционалу бота.
+    """
+    
     def __init__(self, drive_service):
+        """
+        Инициализация менеджера доступа.
+        
+        Args:
+            drive_service: Сервис Google Drive для работы с файлами
+        """
         self.drive = drive_service
         self.blacklist = set()
         self.whitelist = set()
 
     def download_list(self, file_id: str) -> List[str]:
-        """Скачивает файл и возвращает список username (без @, в нижнем регистре)."""
+        """
+        Скачивает список пользователей из Google Drive файла.
+        
+        Args:
+            file_id (str): ID файла в Google Drive
+            
+        Returns:
+            List[str]: Список username пользователей (без @, в нижнем регистре)
+        """
         try:
+            # Получаем медиа-поток файла
             request = self.drive.files().get_media(fileId=file_id)
             file_data = io.BytesIO()
             downloader = MediaIoBaseDownload(file_data, request)
             done = False
+            
+            # Скачиваем файл
             while not done:
                 status, done = downloader.next_chunk()
+            
             file_data.seek(0)
             content = file_data.read().decode('utf-8')
-            # Очищаем: удаляем @, приводим к нижнему регистру, убираем пробелы
+            
+            # Обрабатываем содержимое файла
             usernames = []
             for line in content.splitlines():
+                # Очищаем строку: удаляем @, приводим к нижнему регистру, убираем пробелы
                 cleaned = line.strip().lower().replace('@', '')
                 if cleaned:
                     usernames.append(cleaned)
@@ -137,13 +226,17 @@ class AccessManager:
             return []
 
     def update_lists(self):
-        """Загружает чёрный и белый списки."""
+        """
+        Обновляет черный и белый списки пользователей из Google Drive файлов.
+        """
+        # Загружаем белый список
         if WHITELIST_FILE_ID:
             self.whitelist = set(self.download_list(WHITELIST_FILE_ID))
             logger.info(f"✅ Загружен белый список: {len(self.whitelist)} пользователей")
         else:
             logger.warning("⚠️ WHITELIST_FILE_ID не задан — белый список пуст")
 
+        # Загружаем черный список
         if BLACKLIST_FILE_ID:
             self.blacklist = set(self.download_list(BLACKLIST_FILE_ID))
             logger.info(f"✅ Загружен чёрный список: {len(self.blacklist)} пользователей")
@@ -152,10 +245,13 @@ class AccessManager:
 
     def is_allowed(self, username: str) -> bool:
         """
-        Проверка доступа по username:
-        - Администраторы (ALLOWED_USERS) всегда допущены
-        - Чёрный список: приоритет выше
-        - Белый список: если задан — только он решает
+        Проверяет, разрешен ли доступ пользователю.
+        
+        Args:
+            username (str): Имя пользователя Telegram
+            
+        Returns:
+            bool: True, если доступ разрешен, False в противном случае
         """
         if not username:
             return False
@@ -177,12 +273,21 @@ class AccessManager:
         # Если белый список пуст — разрешаем всех, кроме чёрного
         return True
 
-# Глобальные переменные
+# Глобальная переменная для менеджера доступа
 access_manager: Optional[AccessManager] = None
 
-# --- ответы ---
+# --- Ответы бота ---
 def get_message(message_code: str, **kwargs) -> str:
-    """Возвращает сообщение по коду с возможностью подстановки параметров."""
+    """
+    Возвращает текст сообщения по коду с возможностью подстановки параметров.
+    
+    Args:
+        message_code (str): Код сообщения
+        **kwargs: Параметры для подстановки в шаблон
+        
+    Returns:
+        str: Форматированное сообщение
+    """
     messages = {
         'access_denied': (
             "Ты кто такой, дядя?\n"
@@ -251,11 +356,16 @@ def get_message(message_code: str, **kwargs) -> str:
         )
     }
     
+    # Получаем сообщение по коду и форматируем его с параметрами
     message = messages.get(message_code, "Неизвестное сообщение")
     return message.format(**kwargs) if kwargs else message
 
 def preload_latest_file():
-    """При старте бота ищет и загружает последний файл из архива."""
+    """
+    При старте бота ищет и загружает последний файл из архива.
+    
+    Ищет файл за последние 30 дней, начиная с сегодняшней даты.
+    """
     global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
 
     gs = GoogleServices()
@@ -264,15 +374,17 @@ def preload_latest_file():
 
     logger.info("🔍 Поиск последнего файла при старте бота...")
 
+    # Проверяем файлы за последние 30 дней
     for days_back in range(31):
         target_date = today - timedelta(days=days_back)
         filename = f"АПП_Склад_{target_date.strftime('%d%m%y')}_{CITY}.xlsm"
 
-        # Поиск по структуре папок: акты → месяц → день
+        # Ищем папку "акты"
         acts = fm.find_folder(PARENT_FOLDER_ID, "акты")
         if not acts:
             continue
 
+        # Формируем имя месяца
         month_num = target_date.month
         month_name = ["январь", "февраль", "март", "апрель", "май", "июнь",
                       "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][month_num - 1]
@@ -280,25 +392,29 @@ def preload_latest_file():
         if not month_folder:
             continue
 
+        # Ищем папку с датой
         date_folder = fm.find_folder(month_folder, target_date.strftime('%d%m%y'))
         if not date_folder:
             continue
 
+        # Ищем файл
         file_id = fm.find_file(date_folder, filename)
         if file_id:
             drive_time = fm.get_file_modified_time(file_id)
             if not drive_time:
                 continue
 
+            # Формируем локальный путь
             local_path = os.path.join(LOCAL_CACHE_DIR, f"cache_{target_date.strftime('%Y%m%d')}.xlsm")
 
-            # Загружаем, если файла нет или он устарел
+            # Проверяем, нуждается ли файл в обновлении
             download_needed = True
             if os.path.exists(local_path):
                 local_time = datetime.fromtimestamp(os.path.getmtime(local_path), tz=timezone.utc)
                 if drive_time <= local_time:
                     download_needed = False
 
+            # Скачиваем файл при необходимости
             if download_needed:
                 logger.info(f"📥 Скачивание файла при старте: {filename} → {local_path}")
                 if not fm.download_file(file_id, local_path):
@@ -308,7 +424,7 @@ def preload_latest_file():
             else:
                 logger.info(f"✅ Используем существующий кэш: {local_path}")
 
-            # Сохраняем метаданные
+            # Сохраняем метаданные файла
             LAST_FILE_ID = file_id
             LAST_FILE_DATE = target_date
             LAST_FILE_DRIVE_TIME = drive_time
@@ -326,35 +442,62 @@ def preload_latest_file():
 
 def extract_number(query: str) -> Optional[str]:
     """
-    Извлекает номер: только буквы, цифры и тире.
-    Возвращает очищенную строку или None.
+    Извлекает серийный номер из строки запроса.
+    
+    Args:
+        query (str): Строка запроса пользователя
+        
+    Returns:
+        Optional[str]: Очищенный серийный номер или None
     """
     if not query:
         return None
+    
     # Удаляем все пробелы и лишние символы
     clean = re.sub(r'[^A-Za-z0-9\-]', '', query.strip())
+    
+    # Проверяем, соответствует ли строка формату СН
     if clean and re.fullmatch(r'[A-Za-z0-9\-]+', clean):
         return clean.upper()  # Приводим к верхнему регистру для единообразия
     return None
 
-
+# --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик команды /start.
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
+    """
     if not update.message:
         return
+    
     user = update.effective_user
     chat_type = update.message.chat.type
+    
+    # Проверяем доступ в приватном чате
     if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
         await update.message.reply_text(get_message('access_denied'))
         return
 
     await update.message.reply_text(get_message('help'), parse_mode='HTML')
 
-# обработчик команды /restart ---
+# Обработчик команды /restart ---
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезапуск бота (только для админов)."""
+    """
+    Перезапуск бота (только для админов).
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
+    """
     if not update.message or not update.effective_user:
         return
+    
     user = update.effective_user
+    
+    # Проверяем, является ли пользователь администратором
     if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
         await update.message.reply_text("❌ Доступ запрещён.")
         return
@@ -371,7 +514,13 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Произошла ошибка при перезагрузке бота.")
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать содержимое папки — нейтральный стиль."""
+    """
+    Показать содержимое папки в Google Drive.
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
+    """
     if update.message.chat.type == 'private':
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username):
@@ -387,6 +536,8 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         items = fm.list_files_in_folder(root_id, max_results=100)
 
         text = f"🗂 <b>Корневая папка</b> (ID: <code>{root_id}</code>)\n"
+        
+        # Формируем текст ответа
         if not items:
             text += "Здесь даже паук не селится — пусто."
         else:
@@ -413,11 +564,19 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перезагрузка чёрного и белого списков (только для администраторов)."""
+    """
+    Перезагрузка чёрного и белого списков.
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
+    """
     if not update.message or not update.effective_user:
         return
 
     user = update.effective_user
+    
+    # Проверяем, является ли пользователь администратором
     if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
         await update.message.reply_text("❌ Доступ запрещён.")
         return
@@ -426,6 +585,7 @@ async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Система доступа не инициализирована.")
         return
 
+    # Обновляем списки
     access_manager.update_lists()
     await update.message.reply_text(
         f"✅ Списки успешно перезагружены.\n"
@@ -434,13 +594,35 @@ async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"🔄 Администратор {user.username} перезагрузил списки доступа.")
 
-
+# --- Класс для работы с Google Drive файлами ---
 class FileManager:
-    """Работа с Google Drive."""
+    """
+    Класс для работы с файлами в Google Drive.
+    
+    Предоставляет методы для поиска, скачивания и получения информации о файлах.
+    """
+    
     def __init__(self, drive):
+        """
+        Инициализация менеджера файлов.
+        
+        Args:
+            drive: Сервис Google Drive
+        """
         self.drive = drive
 
     def find_folder(self, parent_id: str, name: str) -> Optional[str]:
+        """
+        Ищет папку по имени в заданной родительской папке.
+        
+        Args:
+            parent_id (str): ID родительской папки
+            name (str): Имя папки для поиска
+            
+        Returns:
+            Optional[str]: ID найденной папки или None
+        """
+        # Формируем запрос к API Google Drive
         query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
         try:
             res = self.drive.files().list(q=query, fields="files(id)").execute()
@@ -455,6 +637,17 @@ class FileManager:
             return None
 
     def find_file(self, folder_id: str, filename: str) -> Optional[str]:
+        """
+        Ищет файл по имени в заданной папке.
+        
+        Args:
+            folder_id (str): ID папки
+            filename (str): Имя файла для поиска
+            
+        Returns:
+            Optional[str]: ID найденного файла или None
+        """
+        # Формируем запрос к API Google Drive
         query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
         try:
             res = self.drive.files().list(q=query, fields="files(id)").execute()
@@ -469,9 +662,20 @@ class FileManager:
             return None
 
     def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
+        """
+        Получает время модификации файла.
+        
+        Args:
+            file_id (str): ID файла
+            
+        Returns:
+            Optional[datetime]: Время модификации файла или None
+        """
         try:
+            # Получаем информацию о файле
             info = self.drive.files().get(fileId=file_id, fields="modifiedTime").execute()
             t = info['modifiedTime']
+            # Преобразуем строку времени в объект datetime
             dt = datetime.strptime(t, "%Y-%m-%dT%H:%M:%S.%fZ")
             return dt.replace(tzinfo=timezone.utc)
         except Exception as e:
@@ -479,11 +683,23 @@ class FileManager:
             return None
 
     def download_file(self, file_id: str, local_path: str) -> bool:
+        """
+        Скачивает файл из Google Drive в локальную директорию.
+        
+        Args:
+            file_id (str): ID файла в Google Drive
+            local_path (str): Локальный путь для сохранения файла
+            
+        Returns:
+            bool: True, если файл успешно скачан, False в противном случае
+        """
         try:
+            # Получаем медиа-поток файла
             request = self.drive.files().get_media(fileId=file_id)
             with open(local_path, 'wb') as fh:
                 downloader = MediaIoBaseDownload(fh, request)
                 done = False
+                # Скачиваем файл по частям
                 while not done:
                     status, done = downloader.next_chunk()
             logger.info(f"✅ Файл успешно скачан: ID={file_id}, путь={local_path}")
@@ -493,7 +709,18 @@ class FileManager:
             return False
 
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict]:
+        """
+        Получает список файлов и папок в заданной папке.
+        
+        Args:
+            folder_id (str): ID папки
+            max_results (int): Максимальное количество результатов
+            
+        Returns:
+            List[Dict]: Список файлов и папок
+        """
         try:
+            # Формируем запрос к API
             query = f"'{folder_id}' in parents and trashed=false"
             res = self.drive.files().list(q=query, pageSize=max_results, fields="files(id, name, mimeType, size)").execute()
             return res.get('files', [])
@@ -501,16 +728,42 @@ class FileManager:
             logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
             return []
 
-
+# --- Класс для поиска данных в Excel ---
 class LocalDataSearcher:
-    """Поиск в Excel по СН и формирование ответа по статусу."""
+    """
+    Класс для поиска данных в локальных Excel файлах.
+    
+    Предоставляет методы для асинхронного поиска по серийным номерам.
+    """
+    
     @staticmethod
     async def search_by_number_async(filepath: str, number: str) -> List[str]:
+        """
+        Асинхронный поиск терминала по серийному номеру в Excel файле.
+        
+        Args:
+            filepath (str): Путь к Excel файлу
+            number (str): Серийный номер для поиска
+            
+        Returns:
+            List[str]: Список результатов поиска
+        """
         loop = asyncio.get_event_loop()
+        # Выполняем синхронную операцию в пуле потоков
         return await loop.run_in_executor(executor, LocalDataSearcher._search_by_number_sync, filepath, number)
     
     @staticmethod
     def _search_by_number_sync(filepath: str, number: str) -> List[str]:
+        """
+        Синхронная реализация поиска терминала по серийному номеру.
+        
+        Args:
+            filepath (str): Путь к Excel файлу
+            number (str): Серийный номер для поиска
+            
+        Returns:
+            List[str]: Список результатов поиска
+        """
         number_upper = number.strip().upper()
         results = []
         try:
@@ -522,8 +775,10 @@ class LocalDataSearcher:
                 logger.error(f"❌ Файл не существует: {filepath}")
                 return results
                 
+            # Открываем Excel файл
             wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
             sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
+            
             if not sheet:
                 logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
                 wb.close()
@@ -536,6 +791,7 @@ class LocalDataSearcher:
                 return results
                 
             found = False
+            # Проходим по строкам таблицы
             for row in sheet.iter_rows(min_row=2, values_only=True):
                 if len(row) < 17 or not row[5]:  # СН в столбце F (индекс 5)
                     continue
@@ -601,9 +857,15 @@ class LocalDataSearcher:
             logger.error(f"❌ Неожиданная ошибка при чтении Excel {filepath}: {e}", exc_info=True)
         return results
 
-
 async def handle_search(update: Update, query: str):
-    """Общая логика поиска — использует предзагруженный файл, проверяет обновления."""
+    """
+    Общая логика поиска терминала по серийному номеру.
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        query (str): Запрос пользователя
+    """
+    # Проверяем доступ в приватном чате
     if update.message.chat.type == 'private':
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
@@ -611,6 +873,8 @@ async def handle_search(update: Update, query: str):
                 get_message('access_denied')
             )
             return
+    
+    # Извлекаем серийный номер
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
@@ -618,6 +882,7 @@ async def handle_search(update: Update, query: str):
             parse_mode='HTML'
         )
         return
+    
     # Отправляем промежуточное сообщение
     try:
         await update.message.reply_text(
@@ -627,7 +892,9 @@ async def handle_search(update: Update, query: str):
     except Exception as e:
         logger.error(f"❌ Не удалось отправить статус-сообщение: {e}")
         return
+    
     global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
+    
     # Проверка: есть ли загруженный файл
     if not LAST_FILE_ID or not LAST_FILE_LOCAL_PATH:
         logger.warning("❌ Нет данных: файл не был предзагружен при старте.")
@@ -638,6 +905,7 @@ async def handle_search(update: Update, query: str):
         except Exception as e:
             logger.error(f"❌ Не удалось отправить ответ об отсутствии файла: {e}")
         return
+    
     if not os.path.exists(LAST_FILE_LOCAL_PATH):
         logger.warning(f"❌ Локальный файл не найден: {LAST_FILE_LOCAL_PATH}")
         try:
@@ -647,6 +915,7 @@ async def handle_search(update: Update, query: str):
         except Exception as e:
             logger.error(f"❌ Ошибка отправки сообщения: {e}")
         return
+    
     # Получаем актуальное время файла в Google Drive
     try:
         gs = GoogleServices()
@@ -688,6 +957,7 @@ async def handle_search(update: Update, query: str):
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения: {e_inner}")
+    
     # Поиск по локальному файлу
     try:
         # Используем асинхронный поиск
@@ -699,6 +969,7 @@ async def handle_search(update: Update, query: str):
                 parse_mode='HTML'
             )
             return
+        
         # Отправляем результаты
         for result in results:
             try:
@@ -725,18 +996,28 @@ async def handle_search(update: Update, query: str):
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
 
-
-# обработчик команды /refresh ---
+# Обработчик команды /refresh ---
 async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Принудительное обновление файла с Google Drive (только для админов)."""
+    """
+    Принудительное обновление файла с Google Drive (только для админов).
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
+    """
     if not update.message or not update.effective_user:
         return
+    
     user = update.effective_user
+    
+    # Проверяем, является ли пользователь администратором
     if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     
     global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
+    
+    # Проверяем наличие данных о файле
     if not LAST_FILE_ID or not LAST_FILE_LOCAL_PATH:
         await update.message.reply_text("❌ Нет данных о файле для обновления.")
         return
@@ -752,7 +1033,7 @@ async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось получить время изменения файла.")
             return
         
-        # Скачиваем файл используя existing функцию
+        # Скачиваем файл
         if fm.download_file(LAST_FILE_ID, LAST_FILE_LOCAL_PATH):
             LAST_FILE_DRIVE_TIME = current_drive_time
             await update.message.reply_text(
@@ -767,9 +1048,14 @@ async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка при обновлении файла: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обновлении файла.")
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений: только команды и упоминания в чатах."""
+    """
+    Обработка сообщений: только команды и упоминания в чатах.
+    
+    Args:
+        update (Update): Объект обновления от Telegram
+        context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
+    """
     if not update.message or not update.message.text:
         return
 
@@ -785,7 +1071,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 get_message('access_denied')
             )
             return
-        # Обработка как раньше
+        
+        # Обработка команды /s
         if text.startswith("/s"):
             query = text[2:].strip()
             if not query:
@@ -796,12 +1083,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await handle_search(update, query)
             return
+        
+        # Обработка других команд
         elif text.startswith('/'):
             await update.message.reply_text(
                 get_message('unknown_command'),
                 parse_mode='HTML'
             )
         else:
+            # Отправляем помощь для обычных сообщений
             await update.message.reply_text(
                 get_message('help'),
                 parse_mode='HTML'
@@ -810,9 +1100,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # В групповых чатах (group/supergroup) — только команды и упоминания
     if chat_type in ['group', 'supergroup']:
-        # Проверяем, является ли сообщение командой (всё ещё нужно, чтобы /s работал)
+        # Проверяем, является ли сообщение командой
         if text.startswith("/s"):
-            # Проверим, адресована ли команда именно этому боту: /s@Sklad_bot
+            # Проверим, адресована ли команда именно этому боту
             if f"@{bot_username}" in text.split()[0] or not ' ' in text:  # /s@bot или /s текст
                 query = re.sub(r'^/s(?:@[\w_]+)?\s*', '', text).strip()
                 if not query:
@@ -844,28 +1134,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Все остальные сообщения — игнорируем
         return
 
-
 def main():
+    """
+    Основная функция запуска бота.
+    
+    Инициализирует конфигурацию, создает обработчики и запускает бота.
+    """
     try:
         init_config()
     except Exception as e:
         logger.critical(f"❌ Критическая ошибка: {e}")
         return
 
+    # Создаем приложение Telegram бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     # Инициализация AccessManager
     global access_manager
     gs = GoogleServices()
     access_manager = AccessManager(gs.drive)
     access_manager.update_lists() 
+    
+    # Предзагружаем последний файл
     preload_latest_file()
+    
+    # Регистрируем функцию для удаления временного файла при выходе
     atexit.register(lambda: os.remove("temp_google_creds.json") if os.path.exists("temp_google_creds.json") else None)
 
+    # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path)) 
     app.add_handler(CommandHandler("reload_lists", reload_lists))
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("refresh", refresh_file))
+    
+    # Добавляем обработчик сообщений
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     logger.info("🚀 Бот запущен. Готов к работе.")
