@@ -297,12 +297,17 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Доступ запрещён.")
         return
     
-    await update.message.reply_text("🔄 Перезапуск бота...")
-    logger.info(f"🔄 Администратор {user.username} запустил перезапуск бота.")
-    
-    # Завершение текущего процесса
-    subprocess.Popen([sys.executable] + sys.argv)
-    sys.exit(0)
+    try:
+        await update.message.reply_text("🔄 Перезапуск бота...")
+        logger.info(f"🔄 Администратор {user.username} запустил перезагрузку бота.")
+        
+        # Завершение текущего процесса
+        subprocess.Popen([sys.executable] + sys.argv)
+        await update.message.reply_text("✅ Бот успешно перезагружен!")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"❌ Ошибка при перезапуске бота: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при перезагрузке бота.")
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать содержимое папки — нейтральный стиль."""
