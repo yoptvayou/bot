@@ -12,8 +12,10 @@ from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import openpyxl
+import openpyxl # type: ignore
 import warnings
+import sys
+import subprocess
 
 # Подавление предупреждений от openpyxl
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
@@ -279,10 +281,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
+            "• <code>/restart</code> — перезапуск бота\n"
+            "• <code>/refresh</code> — обновления файла склада\n"
             "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n",
             parse_mode='HTML'
     )
 
+# обработчик команды /restart ---
+async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапуск бота (только для админов)."""
+    if not update.message or not update.effective_user:
+        return
+    user = update.effective_user
+    if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    
+    await update.message.reply_text("🔄 Перезапуск бота...")
+    logger.info(f"🔄 Администратор {user.username} запустил перезапуск бота.")
+    
+    # Завершение текущего процесса
+    subprocess.Popen([sys.executable] + sys.argv)
+    sys.exit(0)
 
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать содержимое папки — нейтральный стиль."""
@@ -473,6 +493,7 @@ class LocalDataSearcher:
 
                 elif status_lower == "зарезервировано":
                     response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
                     if issue_status_lower == "выдан":
                         # Показываем всё: место, инженера, дату
                         response_parts.append(f"<b>Заявка:</b> <code>{request_num}</code>")
@@ -643,6 +664,47 @@ async def handle_search(update: Update, query: str):
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
 
+# обработчик команды /refresh ---
+async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Принудительное обновление файла с Google Drive (только для админов)."""
+    if not update.message or not update.effective_user:
+        return
+    user = update.effective_user
+    if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
+        await update.message.reply_text("❌ Доступ запрещён.")
+        return
+    
+    global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
+    if not LAST_FILE_ID or not LAST_FILE_LOCAL_PATH:
+        await update.message.reply_text("❌ Нет данных о файле для обновления.")
+        return
+    
+    try:
+        await update.message.reply_text("🔄 Обновление файла с Google Drive...")
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+        
+        # Получаем текущее время файла в Google Drive
+        current_drive_time = fm.get_file_modified_time(LAST_FILE_ID)
+        if not current_drive_time:
+            await update.message.reply_text("❌ Не удалось получить время изменения файла.")
+            return
+        
+        # Скачиваем файл используя existing функцию
+        if fm.download_file(LAST_FILE_ID, LAST_FILE_LOCAL_PATH):
+            LAST_FILE_DRIVE_TIME = current_drive_time
+            await update.message.reply_text(
+                f"✅ Файл успешно обновлён!\n"
+                f"Дата изменения: {current_drive_time.strftime('%d.%m.%Y %H:%M:%S')}"
+            )
+            logger.info(f"🔄 Файл обновлён администратором {user.username}")
+        else:
+            await update.message.reply_text("❌ Не удалось обновить файл.")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении файла: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при обновлении файла.")
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка сообщений: только команды и упоминания в чатах."""
@@ -681,7 +743,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Доступные команды:\n"
                 "• <code>/s СН</code> — найти терминал по серийному номеру\n"
                 "• <code>/path</code> — показать содержимое корневой папки\n"
-                "• <code>/reload_lists</code> — перезагрузить списки доступа",
+                "• <code>/reload_lists</code> — перезагрузить списки доступа"
+                "• <code>/restart</code> — перезапуск бота\n"
+                "• <code>/refresh</code> — обновления файла склада\n",
                 parse_mode='HTML'
             )
         else:
@@ -689,7 +753,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Используй:\n"
                 "• <code>/s СН</code> — найти терминал по серийному номеру\n"
                 "• <code>/path</code> — показать содержимое корневой папки\n"
-                "• <code>/reload_lists</code> — перезагрузить списки доступа",
+                "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
+                "• <code>/restart</code> — перезапуск бота\n"
+                "• <code>/refresh</code> — обновления файла склада\n",
                 parse_mode='HTML'
             )
         return
@@ -749,8 +815,10 @@ def main():
     preload_latest_file()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("path", show_path))
-    app.add_handler(CommandHandler("reload_lists", reload_lists))  # Новая команда
+    app.add_handler(CommandHandler("path", show_path)) 
+    app.add_handler(CommandHandler("reload_lists", reload_lists))
+    app.add_handler(CommandHandler("restart", restart_bot))
+    app.add_handler(CommandHandler("refresh", refresh_file))
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     logger.info("🚀 Бот запущен. Готов к работе.")
