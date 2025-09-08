@@ -459,6 +459,9 @@ class LocalDataSearcher:
         number_upper = number.strip().upper()
         results = []
         try:
+            # Логирование запроса
+            logger.info(f"🔍 Поиск терминала по СН: {number_upper}")
+            
             # Проверка существования файла
             if not os.path.exists(filepath):
                 logger.error(f"❌ Файл не существует: {filepath}")
@@ -477,6 +480,7 @@ class LocalDataSearcher:
                 wb.close()
                 return results
                 
+            found = False
             for row in sheet.iter_rows(min_row=2, values_only=True):
                 if len(row) < 17 or not row[5]:  # СН в столбце F (индекс 5)
                     continue
@@ -484,6 +488,7 @@ class LocalDataSearcher:
                 sn = str(row[5]).strip().upper()
                 if sn != number_upper:
                     continue
+                found = True
                 equipment_type = str(row[4]).strip() if row[4] else "Не указано"
                 model = str(row[6]).strip() if row[6] else "Не указано"
                 request_num = str(row[7]).strip() if row[7] else "Не указано"
@@ -526,6 +531,13 @@ class LocalDataSearcher:
                 result_text = header + "\n" + "\n".join(response_parts)
                 results.append(result_text)
             wb.close()
+            
+            # Логирование результата поиска
+            if found:
+                logger.info(f"✅ Найден терминал по СН: {number_upper}")
+            else:
+                logger.info(f"❌ Терминал не найден по СН: {number_upper}")
+                
         except openpyxl.utils.exceptions.InvalidFileException as e:
             logger.error(f"❌ Ошибка чтения Excel (поврежденный файл): {filepath} - {e}")
         except openpyxl.utils.exceptions.IllegalCharacterError as e:
