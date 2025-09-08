@@ -16,6 +16,9 @@ import openpyxl # type: ignore
 import warnings
 import sys
 import subprocess
+import io
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Подавление предупреждений от openpyxl
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
@@ -45,10 +48,10 @@ LAST_FILE_ID: Optional[str] = None
 LAST_FILE_DATE: Optional[datetime] = None
 LAST_FILE_DRIVE_TIME: Optional[datetime] = None
 LAST_FILE_LOCAL_PATH: Optional[str] = None
+executor = ThreadPoolExecutor(max_workers=4)  # Для параллелизма
 
 # --- Разрешённые пользователи (администраторы) ---
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
-
 
 def get_credentials_path() -> str:
     """Декодирует Google Credentials из переменной окружения."""
@@ -92,7 +95,7 @@ def init_config():
 
 
 class GoogleServices:
-    """Одиночка для Google API."""
+    """Google API."""
     _instance = None
 
     def __new__(cls):
@@ -102,7 +105,7 @@ class GoogleServices:
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
 
-import io  # Убедитесь, что импортирован
+
 
 class AccessManager:
     """Управление доступом: чёрный/белый списки по username."""
@@ -447,55 +450,64 @@ class FileManager:
 class LocalDataSearcher:
     """Поиск в Excel по СН и формирование ответа по статусу."""
     @staticmethod
-    def search_by_number(filepath: str, number: str) -> List[str]:
+    async def search_by_number_async(filepath: str, number: str) -> List[str]:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(executor, LocalDataSearcher._search_by_number_sync, filepath, number)
+    
+    @staticmethod
+    def _search_by_number_sync(filepath: str, number: str) -> List[str]:
         number_upper = number.strip().upper()
         results = []
         try:
+            # Проверка существования файла
+            if not os.path.exists(filepath):
+                logger.error(f"❌ Файл не существует: {filepath}")
+                return results
+                
             wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
             sheet = wb["Терминалы"] if "Терминалы" in wb.sheetnames else None
             if not sheet:
                 logger.warning(f"⚠️ Лист 'Терминалы' не найден в {filepath}")
                 wb.close()
                 return results
-
+            
+            # Проверка наличия данных в файле
+            if sheet.max_row < 2:
+                logger.warning(f"⚠️ Файл {filepath} пуст или не содержит данных")
+                wb.close()
+                return results
+                
             for row in sheet.iter_rows(min_row=2, values_only=True):
                 if len(row) < 17 or not row[5]:  # СН в столбце F (индекс 5)
                     continue
-
                 # Извлечение данных
                 sn = str(row[5]).strip().upper()
                 if sn != number_upper:
                     continue
-
                 equipment_type = str(row[4]).strip() if row[4] else "Не указано"
                 model = str(row[6]).strip() if row[6] else "Не указано"
+                request_num = str(row[7]).strip() if row[7] else "Не указано"
                 status = str(row[8]).strip() if row[8] else "Не указано"
                 storage = str(row[13]).strip() if row[13] else "Не указано"
                 issue_status = str(row[14]).strip() if row[14] else ""
                 engineer = str(row[15]).strip() if row[15] else "Не указано"
-                issue_date = str(row[16]).strip() if row[16] else "Не указано"
-                request_num = str(row[7]).strip() if row[7] else "Не указано"
-
+                issue_date = str(row[16]).strip() if row[16] else "Не указано"                
                 # Регистронезависимые проверки
                 status_lower = status.lower()
                 issue_status_lower = issue_status.lower()
-
                 # Формируем базовые поля
                 response_parts = [
                     f"<b>СН:</b> <code>{sn}</code>",
                     f"<b>Тип оборудования:</b> <code>{equipment_type}</code>",
                     f"<b>Модель терминала:</b> <code>{model}</code>",
                 ]
-
                 # --- Логика по статусу ---
                 if status_lower == "на складе":
                     response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
                     response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
-
                 elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
                     response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code> — как труп в багажнике")
                     response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code> — можно разобрать на запчасти")
-
                 elif status_lower == "зарезервировано":
                     response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
                     response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
@@ -505,20 +517,21 @@ class LocalDataSearcher:
                         response_parts.append(f"<b>Выдан инженеру:</b> <code>{engineer}</code>")
                         response_parts.append(f"<b>Дата выдачи:</b> <code>{issue_date}</code>")
                     # Если не выдан — ничего больше не добавляем
-
                 else:
                     # Все остальные статусы: просто показываем статус
                     response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
                     # Можно добавить место, если нужно, но по ТЗ — не требуется
-
                 # Формируем итоговый текст
                 header = "ℹ️ <b>Информация о терминале</b>"
                 result_text = header + "\n" + "\n".join(response_parts)
                 results.append(result_text)
-
             wb.close()
+        except openpyxl.utils.exceptions.InvalidFileException as e:
+            logger.error(f"❌ Ошибка чтения Excel (поврежденный файл): {filepath} - {e}")
+        except openpyxl.utils.exceptions.IllegalCharacterError as e:
+            logger.error(f"❌ Ошибка чтения Excel (недопустимые символы): {filepath} - {e}")
         except Exception as e:
-            logger.error(f"❌ Ошибка чтения Excel {filepath}: {e}", exc_info=True)
+            logger.error(f"❌ Неожиданная ошибка при чтении Excel {filepath}: {e}", exc_info=True)
         return results
 
 
@@ -533,17 +546,15 @@ async def handle_search(update: Update, query: str):
                 "Хочешь доступ — плати бабки или лежи в багажнике до утра."
             )
             return
-
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
             "Ты чё, братан, по пьяни печатаешь?\n"
             "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
-            "Попробуй ещё раз, а то выкину в реку.\n",
+            "Попробуй ещё раз, а то выкину в реку.",
             parse_mode='HTML'
         )
         return
-
     # Отправляем промежуточное сообщение
     try:
         await update.message.reply_text(
@@ -554,9 +565,7 @@ async def handle_search(update: Update, query: str):
     except Exception as e:
         logger.error(f"❌ Не удалось отправить статус-сообщение: {e}")
         return
-
     global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
-
     # Проверка: есть ли загруженный файл
     if not LAST_FILE_ID or not LAST_FILE_LOCAL_PATH:
         logger.warning("❌ Нет данных: файл не был предзагружен при старте.")
@@ -564,12 +573,11 @@ async def handle_search(update: Update, query: str):
             await update.message.reply_text(
                 "Архивы пусты, брат.\n"
                 "Либо файл сожгли, либо его ещё не подкинули.\n"
-                "Приходи завтра — может, кто-нибудь не сдохнет и загрузит.\n"
+                "Приходи завтра — может, кто-нибудь не сдохнет и загрузит."
             )
         except Exception as e:
             logger.error(f"❌ Не удалось отправить ответ об отсутствии файла: {e}")
         return
-
     if not os.path.exists(LAST_FILE_LOCAL_PATH):
         logger.warning(f"❌ Локальный файл не найден: {LAST_FILE_LOCAL_PATH}")
         try:
@@ -581,7 +589,6 @@ async def handle_search(update: Update, query: str):
         except Exception as e:
             logger.error(f"❌ Ошибка отправки сообщения: {e}")
         return
-
     # Получаем актуальное время файла в Google Drive
     try:
         gs = GoogleServices()
@@ -594,13 +601,13 @@ async def handle_search(update: Update, query: str):
             # Проверяем, нужно ли обновить
             local_time = datetime.fromtimestamp(os.path.getmtime(LAST_FILE_LOCAL_PATH), tz=timezone.utc)
             if LAST_FILE_DRIVE_TIME is None or current_drive_time > LAST_FILE_DRIVE_TIME:
-                logger.info(f"🔄 Файл в облаке новее ({current_drive_time.isoformat()} > {LAST_FILE_DRIVE_TIME}). Перезагрузка...")
+                logger.info(f"🔄 Файл в облаке новее ({current_drive_time.isoformat()} > {LAST_FILE_DRIVE_TIME}). Скачивание...")
                 try:
                     if fm.download_file(LAST_FILE_ID, LAST_FILE_LOCAL_PATH):
                         LAST_FILE_DRIVE_TIME = current_drive_time
                         logger.info(f"✅ Файл обновлён: {LAST_FILE_LOCAL_PATH}")
                     else:
-                        logger.error("❌ Не удалось перезагрузить обновлённый файл. Используем старую версию.")
+                        logger.error("❌ Не удалось скачать обновлённый файл. Используем старую версию.")
                         try:
                             await update.message.reply_text(
                                 "Файл обновился, но я не смог его подтянуть.\n"
@@ -626,21 +633,19 @@ async def handle_search(update: Update, query: str):
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения: {e_inner}")
-
     # Поиск по локальному файлу
     try:
+        # Используем асинхронный поиск
         lds = LocalDataSearcher()
-        results = lds.search_by_number(LAST_FILE_LOCAL_PATH, number)
-
+        results = await lds.search_by_number_async(LAST_FILE_LOCAL_PATH, number)
         if not results:
             await update.message.reply_text(
                 f"Терминал с СН <code>{number}</code>?\n"
                 "Нету. Ни в базе, ни в подвале, ни в багажнике 'Весты'.\n"
-                "Может, он уже в металлоломе... или ты втираешь мне очки?\n",
+                "Может, он уже в металлоломе... или ты втираешь мне очки?",
                 parse_mode='HTML'
             )
             return
-
         # Отправляем результаты
         for result in results:
             try:
@@ -658,7 +663,6 @@ async def handle_search(update: Update, query: str):
                     )
                 except Exception as e_inner:
                     logger.error(f"❌ Ошибка отправки fallback-сообщения: {e_inner}")
-
     except Exception as e:
         logger.error(f"❌ Ошибка при поиске в Excel: {e}", exc_info=True)
         try:
@@ -668,6 +672,7 @@ async def handle_search(update: Update, query: str):
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
+
 
 # обработчик команды /refresh ---
 async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -748,7 +753,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Доступные команды:\n"
                 "• <code>/s СН</code> — найти терминал по серийному номеру\n"
                 "• <code>/path</code> — показать содержимое корневой папки\n"
-                "• <code>/reload_lists</code> — перезагрузить списки доступа"
+                "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
                 "• <code>/restart</code> — перезапуск бота\n"
                 "• <code>/refresh</code> — обновления файла склада\n",
                 parse_mode='HTML'
@@ -811,7 +816,6 @@ def main():
         return
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-
     # Инициализация AccessManager
     global access_manager
     gs = GoogleServices()
@@ -828,7 +832,6 @@ def main():
 
     logger.info("🚀 Бот запущен. Готов к работе.")
     app.run_polling()
-
 
 if __name__ == '__main__':
     main()
