@@ -1,21 +1,19 @@
+import atexit
 import logging
 import re
 import os
 import base64
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import openpyxl # type: ignore
 import warnings
 import sys
-import subprocess
 import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +38,6 @@ LOCAL_CACHE_DIR = "./local_cache"
 CREDENTIALS_FILE: str = ""
 TELEGRAM_TOKEN: str = ""
 PARENT_FOLDER_ID: str = ""
-TEMP_FOLDER_ID: str = ""
 ROOT_FOLDER_YEAR: str = ""
 BLACKLIST_FILE_ID: str = ""
 WHITELIST_FILE_ID: str = ""
@@ -53,6 +50,7 @@ executor = ThreadPoolExecutor(max_workers=4)  # Для параллелизма
 # --- Разрешённые пользователи (администраторы) ---
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
 
+# --- для предотвращения утечки данных ---
 def get_credentials_path() -> str:
     """Декодирует Google Credentials из переменной окружения."""
     encoded = os.getenv("GOOGLE_CREDS_BASE64")
@@ -65,6 +63,8 @@ def get_credentials_path() -> str:
         with open(temp_path, 'w') as f:
             json.dump(creds, f)
         logger.info(f"✅ Учетные данные сохранены: {temp_path}")
+        # --- удаление временного файла при выходе ---
+        atexit.register(lambda: os.remove(temp_path) if os.path.exists(temp_path) else None)
         return temp_path
     except Exception as e:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
@@ -180,6 +180,80 @@ class AccessManager:
 # Глобальные переменные
 access_manager: Optional[AccessManager] = None
 
+# --- ответы ---
+def get_message(message_code: str, **kwargs) -> str:
+    """Возвращает сообщение по коду с возможностью подстановки параметров."""
+    messages = {
+        'access_denied': (
+            "Ты кто такой, дядя?\n"
+            "Не в списке — не входи.\n"
+            "Хочешь доступ — плати бабки или лежи в багажнике до утра."
+        ),
+        'help': (
+            "О, смотри-ка — гость на складе!\n"
+            "Только не стой как лох у контейнера — говори, что надо.\n"
+            "\n"
+            "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
+            "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
+            "• <code>/reload_lists</code> — обновить список предателей и своих\n"
+            "• <code>/restart</code> — перезапуск бота\n"
+            "• <code>/refresh</code> — обновления файла склада\n"
+            "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
+        ),
+        'invalid_number': (
+            "Ты чё, братан, по пьяни печатаешь?\n"
+            "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
+            "Попробуй ещё раз, а то выкину в реку."
+        ),
+        'search_start': (
+            "🔍 Копаю в архивах... Где-то был этот <code>{number}</code>...\n"
+            "Если не спёрли, как в прошлый раз — найду."
+        ),
+        'no_file': (
+            "Архивы пусты, брат.\n"
+            "Либо файл сожгли, либо его ещё не подкинули.\n"
+            "Приходи завтра — может, кто-нибудь не сдохнет и загрузит."
+        ),
+        'file_not_found_local': (
+            "Файл был, но теперь его нет.\n"
+            "Кто-то слил базу в канализацию или сервер сдох.\n"
+            "Жди, пока кто-то перезальёт."
+        ),
+        'no_terminal': (
+            "Терминал с СН <code>{number}</code>?\n"
+            "Нету. Ни в базе, ни в подвале, ни в багажнике 'Весты'.\n"
+            "Может, он уже в металлоломе... или ты втираешь мне очки?"
+        ),
+        'file_update_error': (
+            "Файл обновился, но я не смог его подтянуть.\n"
+            "Работаю на старых данных — могут быть косяки."
+        ),
+        'file_update_success': (
+            "Файл обновился, но я не смог его загрузить.\n"
+            "Продолжаю работать на старых данных."
+        ),
+        'search_error': (
+            "База есть, но читать не могу — видимо, кто-то опять говнокод написал.\n"
+            "Попробуй позже."
+        ),
+        'missing_number': (
+            "Укажи серийный номер после команды.\n"
+            "Пример: <code>/s AB123456</code>"
+        ),
+        'unknown_command': (
+            "Неизвестная команда.\n"
+            "Доступные команды:\n"
+            "• <code>/s СН</code> — найти терминал по серийному номеру\n"
+            "• <code>/path</code> — показать содержимое корневой папки\n"
+            "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
+            "• <code>/restart</code> — перезапуск бота\n"
+            "• <code>/refresh</code> — обновления файла склада\n"
+        )
+    }
+    
+    message = messages.get(message_code, "Неизвестное сообщение")
+    return message.format(**kwargs) if kwargs else message
+
 def preload_latest_file():
     """При старте бота ищет и загружает последний файл из архива."""
     global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
@@ -270,25 +344,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_type = update.message.chat.type
     if chat_type == 'private' and (not user.username or user.username not in ALLOWED_USERS):
-        await update.message.reply_text(
-            "Ты кто такой, дядя?\n"
-            "Не в списке — не входи.\n"
-            "Хочешь доступ — плати бабки или лежи в багажнике до утра."
-        )
+        await update.message.reply_text(get_message('access_denied'))
         return
 
-    await update.message.reply_text(
-            "О, смотри-ка — гость на складе!\n"
-            "Только не стой как лох у контейнера — говори, что надо.\n"
-            "\n"
-            "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
-            "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
-            "• <code>/reload_lists</code> — обновить список предателей и своих\n"
-            "• <code>/restart</code> — перезапуск бота\n"
-            "• <code>/refresh</code> — обновления файла склада\n"
-            "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n",
-            parse_mode='HTML'
-    )
+    await update.message.reply_text(get_message('help'), parse_mode='HTML')
 
 # обработчик команды /restart ---
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,10 +363,9 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔄 Перезапуск бота...")
         logger.info(f"🔄 Администратор {user.username} запустил перезагрузку бота.")
         
-        # Завершение текущего процесса
-        subprocess.Popen([sys.executable] + sys.argv)
+        # Используем os.execv для перезапуска текущего процесса
+        os.execv(sys.executable, [sys.executable] + sys.argv)
         await update.message.reply_text("✅ Бот успешно перезагружен!")
-        sys.exit(0)
     except Exception as e:
         logger.error(f"❌ Ошибка при перезапуске бота: {e}")
         await update.message.reply_text("❌ Произошла ошибка при перезагрузке бота.")
@@ -318,9 +376,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username):
             await update.message.reply_text(
-                "Ты кто такой, а?\n"
-                "Не в списке — не входи.\n"
-                "Хочешь доступ — плати бабки или лежи в багажнике до утра."
+                get_message('access_denied')
             )
             return
 
@@ -353,8 +409,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка /path: {e}")
         await update.message.reply_text(
-            "Произошла ошибка при получении списка файлов.\n"
-            "Попробуй позже."
+            get_message('search_error')
         )
 
 async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -553,25 +608,20 @@ async def handle_search(update: Update, query: str):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
-                "Ты кто такой, дядя?\n"
-                "Не в списке — не входи.\n"
-                "Хочешь доступ — плати бабки или лежи в багажнике до утра."
+                get_message('access_denied')
             )
             return
     number = extract_number(query)
     if not number:
         await update.message.reply_text(
-            "Ты чё, братан, по пьяни печатаешь?\n"
-            "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
-            "Попробуй ещё раз, а то выкину в реку.",
+            get_message('invalid_number'),
             parse_mode='HTML'
         )
         return
     # Отправляем промежуточное сообщение
     try:
         await update.message.reply_text(
-            f"🔍 Копаю в архивах... Где-то был этот <code>{number}</code>...\n"
-            "Если не спёрли, как в прошлый раз — найду.",
+            get_message('search_start', number=number),
             parse_mode='HTML'
         )
     except Exception as e:
@@ -583,9 +633,7 @@ async def handle_search(update: Update, query: str):
         logger.warning("❌ Нет данных: файл не был предзагружен при старте.")
         try:
             await update.message.reply_text(
-                "Архивы пусты, брат.\n"
-                "Либо файл сожгли, либо его ещё не подкинули.\n"
-                "Приходи завтра — может, кто-нибудь не сдохнет и загрузит."
+                get_message('no_file')
             )
         except Exception as e:
             logger.error(f"❌ Не удалось отправить ответ об отсутствии файла: {e}")
@@ -594,9 +642,7 @@ async def handle_search(update: Update, query: str):
         logger.warning(f"❌ Локальный файл не найден: {LAST_FILE_LOCAL_PATH}")
         try:
             await update.message.reply_text(
-                "Файл был, но теперь его нет.\n"
-                "Кто-то слил базу в канализацию или сервер сдох.\n"
-                "Жди, пока кто-то перезальёт."
+                get_message('file_not_found_local')
             )
         except Exception as e:
             logger.error(f"❌ Ошибка отправки сообщения: {e}")
@@ -622,8 +668,7 @@ async def handle_search(update: Update, query: str):
                         logger.error("❌ Не удалось скачать обновлённый файл. Используем старую версию.")
                         try:
                             await update.message.reply_text(
-                                "Файл обновился, но я не смог его подтянуть.\n"
-                                "Работаю на старых данных — могут быть косяки."
+                                get_message('file_update_error')
                             )
                         except Exception as e:
                             logger.error(f"❌ Ошибка отправки предупреждения: {e}")
@@ -631,8 +676,7 @@ async def handle_search(update: Update, query: str):
                     logger.error(f"❌ Ошибка при скачивании файла: {e}", exc_info=True)
                     try:
                         await update.message.reply_text(
-                            "Файл обновился, но я не смог его загрузить.\n"
-                            "Продолжаю работать на старых данных."
+                            get_message('file_update_success')
                         )
                     except Exception as e_inner:
                         logger.error(f"❌ Ошибка отправки уведомления: {e_inner}")
@@ -640,8 +684,7 @@ async def handle_search(update: Update, query: str):
         logger.error(f"❌ Критическая ошибка при проверке обновления файла: {e}", exc_info=True)
         try:
             await update.message.reply_text(
-                "Что-то сломалось при проверке актуальности базы.\n"
-                "Работаю на последних известных данных."
+                get_message('search_error')
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения: {e_inner}")
@@ -652,9 +695,7 @@ async def handle_search(update: Update, query: str):
         results = await lds.search_by_number_async(LAST_FILE_LOCAL_PATH, number)
         if not results:
             await update.message.reply_text(
-                f"Терминал с СН <code>{number}</code>?\n"
-                "Нету. Ни в базе, ни в подвале, ни в багажнике 'Весты'.\n"
-                "Может, он уже в металлоломе... или ты втираешь мне очки?",
+                get_message('no_terminal', number=number),
                 parse_mode='HTML'
             )
             return
@@ -679,8 +720,7 @@ async def handle_search(update: Update, query: str):
         logger.error(f"❌ Ошибка при поиске в Excel: {e}", exc_info=True)
         try:
             await update.message.reply_text(
-                "База есть, но читать не могу — видимо, кто-то опять говнокод написал.\n"
-                "Попробуй позже."
+                get_message('search_error')
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
@@ -742,9 +782,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
-                "Ты кто такой, дядя?\n"
-                "Не в списке — не входи.\n"
-                "Хочешь доступ — плати бабки или лежи в багажнике до утра."
+                get_message('access_denied')
             )
             return
         # Обработка как раньше
@@ -752,8 +790,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = text[2:].strip()
             if not query:
                 await update.message.reply_text(
-                    "Укажи серийный номер после команды.\n"
-                    "Пример: <code>/s AB123456</code>",
+                    get_message('missing_number'),
                     parse_mode='HTML'
                 )
                 return
@@ -761,23 +798,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif text.startswith('/'):
             await update.message.reply_text(
-                "Неизвестная команда.\n"
-                "Доступные команды:\n"
-                "• <code>/s СН</code> — найти терминал по серийному номеру\n"
-                "• <code>/path</code> — показать содержимое корневой папки\n"
-                "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
-                "• <code>/restart</code> — перезапуск бота\n"
-                "• <code>/refresh</code> — обновления файла склада\n",
+                get_message('unknown_command'),
                 parse_mode='HTML'
             )
         else:
             await update.message.reply_text(
-                "Используй:\n"
-                "• <code>/s СН</code> — найти терминал по серийному номеру\n"
-                "• <code>/path</code> — показать содержимое корневой папки\n"
-                "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
-                "• <code>/restart</code> — перезапуск бота\n"
-                "• <code>/refresh</code> — обновления файла склада\n",
+                get_message('help'),
                 parse_mode='HTML'
             )
         return
@@ -791,8 +817,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query = re.sub(r'^/s(?:@[\w_]+)?\s*', '', text).strip()
                 if not query:
                     await update.message.reply_text(
-                        "Укажи серийный номер после команды.\n"
-                        "Пример: <code>/s AB123456</code>",
+                        get_message('missing_number'),
                         parse_mode='HTML'
                     )
                     return
@@ -834,6 +859,7 @@ def main():
     access_manager = AccessManager(gs.drive)
     access_manager.update_lists() 
     preload_latest_file()
+    atexit.register(lambda: os.remove("temp_google_creds.json") if os.path.exists("temp_google_creds.json") else None)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("path", show_path)) 
