@@ -1260,6 +1260,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_type in ['group', 'supergroup']:
         # Проверяем лимиты DDoS
         username = user.username if user.username else str(user.id)
+
         if not check_user_limit(username):
             # Получаем время до разблокировки
             ban_start = user_ban_start_times.get(username)
@@ -1319,6 +1320,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Для каналов (channel) — только упоминания
     if chat_type == 'channel':
         # Проверяем упоминание: @Sklad_bot ...
+        username = user.username if user.username else str(user.id)
         mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
         if mention_match:
             query = mention_match.group(1).strip()
