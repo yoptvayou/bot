@@ -1187,6 +1187,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update (Update): Объект обновления от Telegram
         context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
     """
+    logger.info(f"DEBUG: bot_username = '{bot_username}'")
+    logger.info(f"DEBUG: text = '{text}'")
+
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
@@ -1289,7 +1292,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Это команда /s, но не для нас — игнорируем
                 return
         # Проверяем упоминание: @Sklad_bot ...
-        mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
+        # Для групп и супергрупп
+        mention_match = re.search(rf'@{re.escape(bot_username)}\s+(.+)', text, re.IGNORECASE)
         if mention_match:
             query = mention_match.group(1).strip()
             if not query:
