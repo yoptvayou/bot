@@ -1179,7 +1179,7 @@ async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка при обновлении файла: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обновлении файла.")
 
-# --- Изменения в функции handle_message ---
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработка сообщений: только команды и упоминания в чатах.
@@ -1288,6 +1288,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 # Это команда /s, но не для нас — игнорируем
                 return
+        # Проверяем упоминание: @Sklad_bot ...
+        mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
+        if mention_match:
+            query = mention_match.group(1).strip()
+            if not query:
+                await update.message.reply_text(
+                    "Укажи серийный номер после упоминания бота.\n"
+                    "Пример: @Sklad_bot AB123456",
+                    parse_mode='HTML'
+                )
+                return
+            await handle_search(update, query)
+            return
+        # Все остальные сообщения — игнорируем
+        return
+    # Для каналов (channel) — только упоминания
+    if chat_type == 'channel':
         # Проверяем упоминание: @Sklad_bot ...
         mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
         if mention_match:
