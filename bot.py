@@ -965,7 +965,7 @@ class LocalDataSearcher:
             logger.error(f"❌ Неожиданная ошибка при чтении Excel {filepath}: {e}", exc_info=True)
         return results
 
-async def handle_search(update: Update, query: str):
+async def handle_search(update: Update, query: str, user=None):
     """
     Общая логика поиска терминала по серийному номеру.
     Args:
@@ -981,7 +981,10 @@ async def handle_search(update: Update, query: str):
             )
             return
     # Проверяем лимиты DDoS
-    username = user.username if user.username else str(user.id)
+    if user is None:
+        user = update.effective_user
+        username = user.username if user.username else str(user.id)
+
     if not check_user_limit(username):
         # Получаем время до разблокировки
         ban_start = user_ban_start_times.get(username)
@@ -1232,7 +1235,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
                 return
-            await handle_search(update, query)
+            await handle_search(update, query, user)
             return
         # Обработка других команд
         elif text.startswith('/'):
@@ -1286,7 +1289,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode='HTML'
                     )
                     return
-                await handle_search(update, query)
+                await handle_search(update, query, user)
                 return
             else:
                 # Это команда /s, но не для нас — игнорируем
@@ -1303,7 +1306,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
                 return
-            await handle_search(update, query)
+            await handle_search(update, query, user)
             return
         # Все остальные сообщения — игнорируем
         return
@@ -1320,7 +1323,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
                 return
-            await handle_search(update, query)
+            await handle_search(update, query, user)
             return
         # Все остальные сообщения — игнорируем
         return
