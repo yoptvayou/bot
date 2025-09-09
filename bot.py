@@ -1190,7 +1190,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update (Update): Объект обновления от Telegram
         context (ContextTypes.DEFAULT_TYPE): Контекст обработчика
     """
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
     bot_username = context.bot.username.lower() if context.bot.username else ""
+
     logger.info(f"DEBUG: bot_username = '{bot_username}'")
     logger.info(f"DEBUG: text = '{text}'")
 
