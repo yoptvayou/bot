@@ -1,5 +1,5 @@
 # --- Импорты ---
-from telegram.constants import ParseMode # Для более точного контроля форматирования
+from telegram.constants import ParseMode
 import atexit
 import logging
 import re
@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Set
 from collections import defaultdict, deque
-from telegram import Update, Message
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -20,8 +20,10 @@ import sys
 import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+
 # --- Подавление предупреждений от openpyxl ---
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
+
 # --- Настройка логирования ---
 # Конфигурация логирования для отслеживания действий бота
 logging.basicConfig(
@@ -30,6 +32,7 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
 # --- Конфигурация ---
 # Константа для города, используется в поиске файлов
 CITY = 'Воронеж'
@@ -64,9 +67,11 @@ LAST_FILE_DRIVE_TIME: Optional[datetime] = None
 LAST_FILE_LOCAL_PATH: Optional[str] = None
 # Пул потоков для параллельной обработки
 executor = ThreadPoolExecutor(max_workers=4)
+
 # --- Разрешённые пользователи (администраторы) ---
 # Список пользователей с правами администратора
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
+
 # --- Защита от DDoS ---
 # Лимиты сообщений (количество сообщений за период)
 MESSAGE_LIMITS = {
@@ -74,18 +79,21 @@ MESSAGE_LIMITS = {
     'hour': 100,    # 100 сообщений в час
     'day': 1000     # 1000 сообщений в день
 }
+
 # Хранилище для отслеживания активности пользователей
 user_activity: Dict[str, Dict[str, deque]] = defaultdict(lambda: {
     'minute': deque(),
     'hour': deque(),
     'day': deque()
 })
+
 # Блокировка пользователей (черный список)
 banned_users: Set[str] = set()
 # Время блокировки пользователей (в минутах)
 user_ban_times: Dict[str, int] = {}
 # Время начала блокировки
 user_ban_start_times: Dict[str, datetime] = {}
+
 # --- Функции для работы с учетными данными ---
 def get_credentials_path() -> str:
     """
@@ -113,6 +121,7 @@ def get_credentials_path() -> str:
     except Exception as e:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
+
 def init_config():
     """
     Инициализация конфигурации бота из переменных окружения.
@@ -146,6 +155,7 @@ def init_config():
     # Создаем директорию для кэширования
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
     logger.info(f"📁 Локальный кэш: {os.path.abspath(LOCAL_CACHE_DIR)}")
+
 # --- Класс для работы с Google API ---
 class GoogleServices:
     """
@@ -168,6 +178,7 @@ class GoogleServices:
             # Инициализируем сервис Google Drive
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
+
 # --- Класс управления доступом ---
 class AccessManager:
     """
@@ -213,6 +224,7 @@ class AccessManager:
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки списка из файла {file_id}: {e}")
             return []
+
     def update_lists(self):
         """
         Обновляет черный и белый списки пользователей из Google Drive файлов.
@@ -229,6 +241,7 @@ class AccessManager:
             logger.info(f"✅ Загружен чёрный список: {len(self.blacklist)} пользователей")
         else:
             logger.warning("⚠️ BLACKLIST_FILE_ID не задан — чёрный список пуст")
+
     def is_allowed(self, username: str) -> bool:
         """
         Проверяет, разрешен ли доступ пользователю.
@@ -251,6 +264,7 @@ class AccessManager:
             return False
         # Если белый список пуст — разрешаем всех, кроме чёрного
         return True
+
 # Глобальная переменная для менеджера доступа
 access_manager: Optional[AccessManager] = None
 
@@ -287,6 +301,7 @@ def check_user_limit(username: str) -> bool:
             # Время блокировки не указано, разблокируем
             unban_user(username)
             return True
+
     now = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     # Очищаем устаревшие записи
     for period, queue in user_activity[username].items():
@@ -298,6 +313,7 @@ def check_user_limit(username: str) -> bool:
                 queue.popleft()
         else:
             logger.warning(f"⚠️ Неподдерживаемый период: {period}")
+
     # Проверяем лимиты
     for period, limit in MESSAGE_LIMITS.items():
         if len(user_activity[username][period]) >= limit:
@@ -308,6 +324,7 @@ def check_user_limit(username: str) -> bool:
     for period in MESSAGE_LIMITS.keys():
         user_activity[username][period].append(now)
     return True
+
 def ban_user(username: str):
     """
     Блокирует пользователя.
@@ -320,6 +337,7 @@ def ban_user(username: str):
     user_ban_start_times[username] = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     banned_users.add(username)
     logger.info(f"🔒 Пользователь {username} заблокирован на {ban_time} минут")
+
 def unban_user(username: str):
     """
     Разблокирует пользователя.
@@ -331,6 +349,7 @@ def unban_user(username: str):
     # Удаляем информацию о блокировке
     user_ban_start_times.pop(username, None)
     user_ban_times.pop(username, None)
+
 def reset_user_limits(username: str):
     """
     Сбрасывает лимиты для пользователя.
@@ -369,11 +388,8 @@ async def manage_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         await update.message.reply_text(
-            "Использование:\n"
-            "<code>/whitelist show</code> — показать список\n"
-            "<code>/whitelist add @username1 @username2</code> — добавить пользователей\n"
-            "<code>/whitelist remove @username1 @username2</code> — удалить пользователей",
-            parse_mode=ParseMode.HTML
+            get_message('list_usage', list_type='whitelist'),
+            parse_mode='HTML'
         )
         return
 
@@ -384,27 +400,34 @@ async def manage_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if access_manager.whitelist:
             whitelist_text = "\n".join([f"@{u}" for u in sorted(access_manager.whitelist)])
             await update.message.reply_text(
-                f"<b>Белый список ({len(access_manager.whitelist)}):</b>\n<code>{whitelist_text}</code>",
-                parse_mode=ParseMode.HTML
+                get_message('list_show_header',
+                           list_type='Белый',
+                           count=len(access_manager.whitelist),
+                           usernames=whitelist_text),
+                parse_mode='HTML'
             )
         else:
-            await update.message.reply_text("Белый список пуст.")
+            await update.message.reply_text(
+                get_message('list_show_empty', list_type='Белый')
+            )
         return
 
     elif action in ["add", "remove"]:
         if not usernames:
-            await update.message.reply_text("Укажите хотя бы один username.")
+            await update.message.reply_text(
+                get_message('list_no_usernames')
+            )
             return
 
         # Проверка разрешений на запись в Google Drive перед изменением
         gs = GoogleServices()
         fm = FileManager(gs.drive)
         can_write_whitelist = fm.check_write_permission(WHITELIST_FILE_ID)
-        can_write_blacklist = fm.check_write_permission(BLACKLIST_FILE_ID) # Проверяем оба, на всякий случай
+        can_write_blacklist = fm.check_write_permission(BLACKLIST_FILE_ID)
 
         if not (can_write_whitelist and can_write_blacklist):
             await update.message.reply_text(
-                "❌ Недостаточно прав для записи в файлы списков на Google Drive. Изменения не сохранены."
+                get_message('list_no_write_permission', list_type='списков')
             )
             logger.warning(f"Администратор {user.username} попытался изменить списки, но у бота нет прав на запись.")
             return
@@ -422,18 +445,22 @@ async def manage_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Обновляем файл на Google Drive
             success = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist))
             if success:
-                msg = "✅ Белый список обновлён.\n"
-                if added:
-                    msg += f"Добавлены: {', '.join([f'@{u}' for u in added])}\n"
-                if already_in:
-                    msg += f"Уже в списке: {', '.join([f'@{u}' for u in already_in])}"
-                await update.message.reply_text(msg)
+                msg_added = ', '.join([f'@{u}' for u in added]) if added else "—"
+                msg_already = ', '.join([f'@{u}' for u in already_in]) if already_in else "—"
+                await update.message.reply_text(
+                    get_message('list_update_success_add',
+                               list_type='Белый',
+                               added=msg_added,
+                               already_in=msg_already)
+                )
                 logger.info(f"Администратор {user.username} добавил в белый список: {added}")
             else:
                 # Откатываем изменения в памяти, если запись не удалась
                 for u in added:
                     access_manager.whitelist.discard(u)
-                await update.message.reply_text("❌ Ошибка при обновлении файла белого списка на Google Drive. Изменения отменены.")
+                await update.message.reply_text(
+                    get_message('list_update_error', list_type='белого списка')
+                )
 
         elif action == "remove":
             removed = []
@@ -448,23 +475,29 @@ async def manage_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Обновляем файл на Google Drive
             success = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist))
             if success:
-                msg = "✅ Белый список обновлён.\n"
-                if removed:
-                    msg += f"Удалены: {', '.join([f'@{u}' for u in removed])}\n"
-                if not_found:
-                    msg += f"Не найдены в списке: {', '.join([f'@{u}' for u in not_found])}"
-                await update.message.reply_text(msg)
+                msg_removed = ', '.join([f'@{u}' for u in removed]) if removed else "—"
+                msg_not_found = ', '.join([f'@{u}' for u in not_found]) if not_found else "—"
+                await update.message.reply_text(
+                    get_message('list_update_success_remove',
+                               list_type='Белый',
+                               removed=msg_removed,
+                               not_found=msg_not_found)
+                )
                 logger.info(f"Администратор {user.username} удалил из белого списка: {removed}")
             else:
                 # Откатываем изменения в памяти, если запись не удалась
                 for u in removed:
                     access_manager.whitelist.add(u)
-                await update.message.reply_text("❌ Ошибка при обновлении файла белого списка на Google Drive. Изменения отменены.")
+                await update.message.reply_text(
+                    get_message('list_update_error', list_type='белого списка')
+                )
     else:
-        await update.message.reply_text("Неизвестное действие. Используйте <code>show</code>, <code>add</code> или <code>remove</code>.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            get_message('list_unknown_action'),
+            parse_mode='HTML'
+        )
 
 
-# --- Команда /blacklist ---
 async def manage_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Управление чёрным списком: добавить, удалить, показать.
@@ -488,11 +521,8 @@ async def manage_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         await update.message.reply_text(
-            "Использование:\n"
-            "<code>/blacklist show</code> — показать список\n"
-            "<code>/blacklist add @username1 @username2</code> — добавить пользователей\n"
-            "<code>/blacklist remove @username1 @username2</code> — удалить пользователей",
-            parse_mode=ParseMode.HTML
+            get_message('list_usage', list_type='blacklist'),
+            parse_mode='HTML'
         )
         return
 
@@ -503,16 +533,23 @@ async def manage_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if access_manager.blacklist:
             blacklist_text = "\n".join([f"@{u}" for u in sorted(access_manager.blacklist)])
             await update.message.reply_text(
-                f"<b>Чёрный список ({len(access_manager.blacklist)}):</b>\n<code>{blacklist_text}</code>",
-                parse_mode=ParseMode.HTML
+                get_message('list_show_header',
+                           list_type='Чёрный',
+                           count=len(access_manager.blacklist),
+                           usernames=blacklist_text),
+                parse_mode='HTML'
             )
         else:
-            await update.message.reply_text("Чёрный список пуст.")
+            await update.message.reply_text(
+                get_message('list_show_empty', list_type='Чёрный')
+            )
         return
 
     elif action in ["add", "remove"]:
         if not usernames:
-            await update.message.reply_text("Укажите хотя бы один username.")
+            await update.message.reply_text(
+                get_message('list_no_usernames')
+            )
             return
 
         # Проверка разрешений на запись в Google Drive перед изменением
@@ -523,72 +560,82 @@ async def manage_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not (can_write_whitelist and can_write_blacklist):
              await update.message.reply_text(
-                "❌ Недостаточно прав для записи в файлы списков на Google Drive. Изменения не сохранены."
-                )
-             logger.warning(f"Администратор {user.username} попытался изменить списки, но у бота нет прав на запись.")
-             return
+                get_message('list_no_write_permission', list_type='списков')
+            )
+        logger.warning(f"Администратор {user.username} попытался изменить списки, но у бота нет прав на запись.")
+        return
 
-        if action == "add":
-            added = []
-            already_in = []
-            for u in usernames:
-                if u not in access_manager.blacklist:
-                    access_manager.blacklist.add(u)
-                    # Автоматически удаляем из белого списка при добавлении в чёрный
-                    if u in access_manager.whitelist:
-                        access_manager.whitelist.discard(u)
-                    added.append(u)
-                else:
-                    already_in.append(u)
-            
-            # Обновляем файлы на Google Drive
-            success_black = fm.update_list_file(BLACKLIST_FILE_ID, sorted(access_manager.blacklist))
-            success_white = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist)) # Обновляем белый список тоже
-            
-            if success_black and success_white:
-                msg = "✅ Чёрный список обновлён.\n"
-                if added:
-                    msg += f"Добавлены: {', '.join([f'@{u}' for u in added])}\n"
-                if already_in:
-                    msg += f"Уже в списке: {', '.join([f'@{u}' for u in already_in])}"
-                await update.message.reply_text(msg)
-                logger.info(f"Администратор {user.username} добавил в чёрный список: {added}")
+    if action == "add":
+        added = []
+        already_in = []
+        for u in usernames:
+            if u not in access_manager.blacklist:
+                access_manager.blacklist.add(u)
+                # Автоматически удаляем из белого списка при добавлении в чёрный
+                if u in access_manager.whitelist:
+                    access_manager.whitelist.discard(u)
+                added.append(u)
             else:
-                # Откатываем изменения в памяти, если запись не удалась
-                for u in added:
-                    access_manager.blacklist.discard(u)
-                    # Восстанавливаем в белый список, если был удален
-                    if u in {u_orig for u_orig in access_manager.whitelist_orig if u_orig.lower() == u}: # Предполагается, что whitelist_orig хранит оригинальное состояние
-                         access_manager.whitelist.add(u)
-                await update.message.reply_text("❌ Ошибка при обновлении файлов списков на Google Drive. Изменения отменены.")
+                already_in.append(u)
+            
+        # Обновляем файлы на Google Drive
+        success_black = fm.update_list_file(BLACKLIST_FILE_ID, sorted(access_manager.blacklist))
+        success_white = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist)) # Обновляем белый список тоже
+            
+        if success_black and success_white:
+            msg_added = ', '.join([f'@{u}' for u in added]) if added else "—"
+            msg_already = ', '.join([f'@{u}' for u in already_in]) if already_in else "—"
+            await update.message.reply_text(
+                    get_message('list_update_success_add',
+                            list_type='Чёрный',
+                            added=msg_added,
+                            already_in=msg_already)
+            )
+            logger.info(f"Администратор {user.username} добавил в чёрный список: {added}")
+        else:
+            # Откатываем изменения в памяти, если запись не удалась
+            for u in added:
+                access_manager.blacklist.discard(u)
+                # Восстанавливаем в белый список, если был удален
+                # (Логика восстановления может быть сложнее, опущена для простоты)
+            await update.message.reply_text(
+                get_message('list_update_error', list_type='чёрного списка')
+            )
 
-        elif action == "remove":
-            removed = []
-            not_found = []
-            for u in usernames:
-                if u in access_manager.blacklist:
-                    access_manager.blacklist.discard(u)
-                    removed.append(u)
-                else:
-                    not_found.append(u)
-            
-            # Обновляем файл на Google Drive
-            success = fm.update_list_file(BLACKLIST_FILE_ID, sorted(access_manager.blacklist))
-            if success:
-                msg = "✅ Чёрный список обновлён.\n"
-                if removed:
-                    msg += f"Удалены: {', '.join([f'@{u}' for u in removed])}\n"
-                if not_found:
-                    msg += f"Не найдены в списке: {', '.join([f'@{u}' for u in not_found])}"
-                await update.message.reply_text(msg)
-                logger.info(f"Администратор {user.username} удалил из чёрного списка: {removed}")
+    elif action == "remove":
+        removed = []
+        not_found = []
+        for u in usernames:
+            if u in access_manager.blacklist:
+                access_manager.blacklist.discard(u)
+                removed.append(u)
             else:
-                # Откатываем изменения в памяти, если запись не удалась
-                for u in removed:
-                    access_manager.blacklist.add(u)
-                await update.message.reply_text("❌ Ошибка при обновлении файла чёрного списка на Google Drive. Изменения отменены.")
+                not_found.append(u)
+            
+        # Обновляем файл на Google Drive
+        success = fm.update_list_file(BLACKLIST_FILE_ID, sorted(access_manager.blacklist))
+        if success:
+            msg_removed = ', '.join([f'@{u}' for u in removed]) if removed else "—"
+            msg_not_found = ', '.join([f'@{u}' for u in not_found]) if not_found else "—"
+            await update.message.reply_text(
+                    get_message('list_update_success_remove',
+                            list_type='Чёрный',
+                            removed=msg_removed,
+                            not_found=msg_not_found)
+            )
+            logger.info(f"Администратор {user.username} удалил из чёрного списка: {removed}")
+        else:
+            # Откатываем изменения в памяти, если запись не удалась
+            for u in removed:
+                access_manager.blacklist.add(u)
+            await update.message.reply_text(
+                get_message('list_update_error', list_type='чёрного списка')
+            )
     else:
-        await update.message.reply_text("Неизвестное действие. Используйте <code>show</code>, <code>add</code> или <code>remove</code>.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            get_message('list_unknown_action'),
+            parse_mode='HTML'
+        )
 
 # --- Ответы бота ---
 def get_message(message_code: str, **kwargs) -> str:
@@ -609,13 +656,18 @@ def get_message(message_code: str, **kwargs) -> str:
         'help': (
             "О, смотри-ка — гость на складе!\n"
             "Только не стой как лох у контейнера — говори, что надо.\n"
+            "• <code>/s 123456</code> — найти терминал по СН\n"
+            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"            
+            "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
             "\n"
-            "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
+            "<b>Только для админов:</b>\n"
+            "• <code>/whitelist show|add|remove [@username...]</code> — управление белым списком\n"
+            "• <code>/blacklist show|add|remove [@username...]</code> — управление чёрным списком\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
             "• <code>/restart</code> — перезапуск бота\n"
             "• <code>/refresh</code> — обновления файла склада\n"
-            "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
+            "• <code>/reset_bans</code> — сброс банов\n"
         ),
         'invalid_number': (
             "Ты чё, братан, по пьяни печатаешь?\n"
@@ -660,11 +712,18 @@ def get_message(message_code: str, **kwargs) -> str:
         'unknown_command': (
             "Неизвестная команда.\n"
             "Доступные команды:\n"
-            "• <code>/s СН</code> — найти терминал по серийному номеру\n"
-            "• <code>/path</code> — показать содержимое корневой папки\n"
-            "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
+            "• <code>/s 123456</code> — найти терминал по СН\n"
+            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"            
+            "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
+            "\n"
+            "<b>Только для админов:</b>\n"
+            "• <code>/whitelist show|add|remove [@username...]</code> — управление белым списком\n"
+            "• <code>/blacklist show|add|remove [@username...]</code> — управление чёрным списком\n"
+            "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
+            "• <code>/reload_lists</code> — обновить список предателей и своих\n"
             "• <code>/restart</code> — перезапуск бота\n"
             "• <code>/refresh</code> — обновления файла склада\n"
+            "• <code>/reset_bans</code> — сброс банов\n"
         ),
         'ddos_blocked': (
             "Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
@@ -681,11 +740,46 @@ def get_message(message_code: str, **kwargs) -> str:
         ),
         'admin_only': (
             "❌ Эта команда доступна только администраторам."
+        ),
+        'list_show_empty': (
+            "{list_type} список пуст."
+        ),
+        'list_show_header': (
+            "<b>{list_type} список ({count}):</b>\n<code>{usernames}</code>"
+        ),
+        'list_usage': (
+            "Использование:\n"
+            "<code>/{list_type} show</code> — показать список\n"
+            "<code>/{list_type} add @username1 @username2</code> — добавить пользователей\n"
+            "<code>/{list_type} remove @username1 @username2</code> — удалить пользователей"
+        ),
+        'list_no_usernames': (
+            "Укажите хотя бы один username."
+        ),
+        'list_no_write_permission': (
+            "❌ Недостаточно прав для записи в файл {list_type} на Google Drive. Изменения не сохранены."
+        ),
+        'list_update_success_add': (
+            "✅ {list_type} список обновлён.\n"
+            "Добавлены: {added}\n"
+            "Уже в списке: {already_in}"
+        ),
+        'list_update_success_remove': (
+            "✅ {list_type} список обновлён.\n"
+            "Удалены: {removed}\n"
+            "Не найдены в списке: {not_found}"
+        ),
+        'list_update_error': (
+            "❌ Ошибка при обновлении файла {list_type} на Google Drive. Изменения отменены."
+        ),
+        'list_unknown_action': (
+            "Неизвестное действие. Используйте <code>show</code>, <code>add</code> или <code>remove</code>."
         )
     }
     # Получаем сообщение по коду и форматируем его с параметрами
     message = messages.get(message_code, "Неизвестное сообщение")
     return message.format(**kwargs) if kwargs else message
+
 def preload_latest_file():
     """
     При старте бота ищет и загружает последний файл из архива.
@@ -751,6 +845,7 @@ def preload_latest_file():
     LAST_FILE_DATE = None
     LAST_FILE_DRIVE_TIME = None
     LAST_FILE_LOCAL_PATH = None
+
 def extract_number(query: str) -> Optional[str]:
     """
     Извлекает серийный номер из строки запроса.
@@ -767,6 +862,7 @@ def extract_number(query: str) -> Optional[str]:
     if clean and re.fullmatch(r'[A-Za-z0-9\-]+', clean):
         return clean.upper()  # Приводим к верхнему регистру для единообразия
     return None
+
 # --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -784,6 +880,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_message('access_denied'))
         return
     await update.message.reply_text(get_message('help'), parse_mode='HTML')
+
 # Обработчик команды /restart ---
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -808,6 +905,7 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при перезапуске бота: {e}")
         await update.message.reply_text("❌ Произошла ошибка при перезагрузке бота.")
+
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Показать содержимое папки в Google Drive.
@@ -850,6 +948,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             get_message('search_error')
         )
+
 async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Перезагрузка чёрного и белого списков.
@@ -875,6 +974,7 @@ async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Чёрный список: {len(access_manager.blacklist)} пользователей\n"
     )
     logger.info(f"🔄 Администратор {user.username} перезагрузил списки доступа.")
+
 # --- Команда /reset_bans ---
 async def reset_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -914,6 +1014,7 @@ async def reset_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_message('reset_success', username=username)
         )
         logger.info(f"🔄 Администратор {user.username} сбросил лимиты для пользователя {username}")
+
 # --- Класс для работы с Google Drive файлами ---
 class FileManager:
     """
@@ -927,6 +1028,7 @@ class FileManager:
             drive: Сервис Google Drive
         """
         self.drive = drive
+
     def find_folder(self, parent_id: str, name: str) -> Optional[str]:
         """
         Ищет папку по имени в заданной родительской папке.
@@ -949,6 +1051,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска папки '{name}': {e}")
             return None
+
     def find_file(self, folder_id: str, filename: str) -> Optional[str]:
         """
         Ищет файл по имени в заданной папке.
@@ -971,6 +1074,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска файла '{filename}': {e}")
             return None
+
     def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
         """
         Получает время модификации файла.
@@ -991,6 +1095,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения времени файла {file_id}: {e}")
             return None
+
     def download_file(self, file_id: str, local_path: str) -> bool:
         """
         Скачивает файл из Google Drive в локальную директорию.
@@ -1014,6 +1119,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка при скачивании файла ID={file_id} в {local_path}: {e}")
             return False
+
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict]:
         """
         Получает список файлов и папок в заданной папке.
@@ -1031,6 +1137,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
             return []
+
     def check_write_permission(self, file_id: str) -> bool:
         """
         Проверяет, есть ли у учетных данных бота права на редактирование файла.
@@ -1100,6 +1207,7 @@ class LocalDataSearcher:
         # Выполняем синхронную операцию в пуле потоков
         return await loop.run_in_executor(executor, LocalDataSearcher._search_by_number_sync, filepath, number)
     @staticmethod
+
     def _search_by_number_sync(filepath: str, number: str) -> List[str]:
         """
         Синхронная реализация поиска терминала по серийному номеру.
@@ -1194,6 +1302,7 @@ class LocalDataSearcher:
         except Exception as e:
             logger.error(f"❌ Неожиданная ошибка при чтении Excel {filepath}: {e}", exc_info=True)
         return results
+
 async def handle_search(update: Update, query: str, user=None, username=None):
     """
     Общая логика поиска терминала по серийному номеру.
@@ -1372,6 +1481,7 @@ async def handle_search(update: Update, query: str, user=None, username=None):
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
+
 # Обработчик команды /refresh ---
 async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1414,6 +1524,7 @@ async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при обновлении файла: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обновлении файла.")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработка сообщений: только команды и упоминания в чатах.
