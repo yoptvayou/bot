@@ -965,7 +965,7 @@ class LocalDataSearcher:
             logger.error(f"❌ Неожиданная ошибка при чтении Excel {filepath}: {e}", exc_info=True)
         return results
 
-async def handle_search(update: Update, query: str, user=None):
+async def handle_search(update: Update, query: str, user=None, username=None):
     """
     Общая логика поиска терминала по серийному номеру.
     Args:
@@ -1233,7 +1233,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         # Обработка команды /s
-        if text.startswith("/s"):
+        elif text.startswith("/s"):
             query = text[2:].strip()
             if not query:
                 await update.message.reply_text(
@@ -1241,7 +1241,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
                 return
-            await handle_search(update, query, user)
+            # --- ИСПРАВЛЕНИЕ ---
+            # Определяем username перед вызовом handle_search
+            if user is None:
+                user = update.effective_user
+            username = user.username if user.username else str(user.id)
+            await handle_search(update, query, user, username)
             return
         # Обработка других команд
         elif text.startswith('/'):
@@ -1281,28 +1286,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         # Проверяем, является ли сообщение командой
         if text.startswith("/s"):
-            # Проверим, адресована ли команда именно этому боту
-            if f"@{bot_username}" in text.split()[0] or not ' ' in text:  # /s@bot или /s текст
-                # Исправленный код для извлечения query
-                if f"@{bot_username}" in text.split()[0]:
-                    # /s@bot текст
-                    query = text[len(f"/s@{bot_username}"):].strip()
-                else:
-                    # /s текст
-                    query = text[2:].strip()
+            # Проверяем упоминание: @Sklad_bot ...
+            # Для групп и супергрупп
+            mention_match = re.search(rf'@{re.escape(bot_username)}\s+(.+)', text, re.IGNORECASE)
+            if mention_match:
+                query = mention_match.group(1).strip()
                 if not query:
                     await update.message.reply_text(
-                        get_message('missing_number'),
+                        "Укажи серийный номер после упоминания бота.\n"
+                        "Пример: @Sklad_bot AB123456",
                         parse_mode='HTML'
                     )
                     return
-                await handle_search(update, query, user)
+                    # --- ИСПРАВЛЕНИЕ ---
+                    # Извлекаем username из user объекта
+                    username = user.username if user.username else str(user.id)
+                    await handle_search(update, query, user, username) # передаем username
+                    return
+                #    Все остальные сообщения — игнорируем
                 return
-            else:
-                # Это команда /s, но не для нас — игнорируем
-                return
+    # Для каналов (channel) — только упоминания
+    if chat_type == 'channel':
         # Проверяем упоминание: @Sklad_bot ...
-        # Для групп и супергрупп
+        username = user.username if user.username else str(user.id)
         mention_match = re.search(rf'@{re.escape(bot_username)}\s+(.+)', text, re.IGNORECASE)
         if mention_match:
             query = mention_match.group(1).strip()
@@ -1313,28 +1319,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
                 return
-            await handle_search(update, query, user)
-            return
-        # Все остальные сообщения — игнорируем
-        return
-    # Для каналов (channel) — только упоминания
-    if chat_type == 'channel':
-        # Проверяем упоминание: @Sklad_bot ...
-        username = user.username if user.username else str(user.id)
-        mention_match = re.match(rf'@{re.escape(bot_username)}\s*(.+)', text, re.IGNORECASE)
-        if mention_match:
-            query = mention_match.group(1).strip()
-            if not query:
-                await update.message.reply_text(
-                    "Укажи серийный номер после упоминания бота.\n"
-                    "Пример: @Sklad_bot AB123456",
-                    parse_mode='HTML'
-                )
+                # --- ИСПРАВЛЕНИЕ ---
+                # Извлекаем username из user объекта
+                username = user.username if user.username else str(user.id)
+                await handle_search(update, query, user, username) # передаем username
                 return
-            await handle_search(update, query, user)
+            #    Все остальные сообщения — игнорируем
             return
-        # Все остальные сообщения — игнорируем
-        return
 
 def main():
     """
