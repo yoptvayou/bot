@@ -1,4 +1,5 @@
 # --- Импорты ---
+from telegram.constants import ParseMode # Для более точного контроля форматирования
 import atexit
 import logging
 import re
@@ -12,7 +13,7 @@ from telegram import Update, Message
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import openpyxl # type: ignore
 import warnings
 import sys
@@ -252,6 +253,7 @@ class AccessManager:
         return True
 # Глобальная переменная для менеджера доступа
 access_manager: Optional[AccessManager] = None
+
 # --- Функции защиты от DDoS ---
 def check_user_limit(username: str) -> bool:
     """
@@ -342,6 +344,252 @@ def reset_user_limits(username: str):
     # Сбрасываем информацию о блокировке
     user_ban_start_times.pop(username, None)
     user_ban_times.pop(username, None)
+
+# --- Команда /whitelist ---
+async def manage_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Управление белым списком: добавить, удалить, показать.
+    Доступно только администраторам.
+    Использование:
+      /whitelist show
+      /whitelist add @username1 @username2
+      /whitelist remove @username1 @username2
+    """
+    if not update.message or not update.effective_user:
+        return
+    user = update.effective_user
+    if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
+        await update.message.reply_text(get_message('admin_only'))
+        return
+
+    if not access_manager:
+        await update.message.reply_text("❌ Система доступа не инициализирована.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Использование:\n"
+            "<code>/whitelist show</code> — показать список\n"
+            "<code>/whitelist add @username1 @username2</code> — добавить пользователей\n"
+            "<code>/whitelist remove @username1 @username2</code> — удалить пользователей",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    action = args[0].lower()
+    usernames = [u.lstrip('@').lower() for u in args[1:]] if len(args) > 1 else []
+
+    if action == "show":
+        if access_manager.whitelist:
+            whitelist_text = "\n".join([f"@{u}" for u in sorted(access_manager.whitelist)])
+            await update.message.reply_text(
+                f"<b>Белый список ({len(access_manager.whitelist)}):</b>\n<code>{whitelist_text}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text("Белый список пуст.")
+        return
+
+    elif action in ["add", "remove"]:
+        if not usernames:
+            await update.message.reply_text("Укажите хотя бы один username.")
+            return
+
+        # Проверка разрешений на запись в Google Drive перед изменением
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+        can_write_whitelist = fm.check_write_permission(WHITELIST_FILE_ID)
+        can_write_blacklist = fm.check_write_permission(BLACKLIST_FILE_ID) # Проверяем оба, на всякий случай
+
+        if not (can_write_whitelist and can_write_blacklist):
+            await update.message.reply_text(
+                "❌ Недостаточно прав для записи в файлы списков на Google Drive. Изменения не сохранены."
+            )
+            logger.warning(f"Администратор {user.username} попытался изменить списки, но у бота нет прав на запись.")
+            return
+
+        if action == "add":
+            added = []
+            already_in = []
+            for u in usernames:
+                if u not in access_manager.whitelist:
+                    access_manager.whitelist.add(u)
+                    added.append(u)
+                else:
+                    already_in.append(u)
+            
+            # Обновляем файл на Google Drive
+            success = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist))
+            if success:
+                msg = "✅ Белый список обновлён.\n"
+                if added:
+                    msg += f"Добавлены: {', '.join([f'@{u}' for u in added])}\n"
+                if already_in:
+                    msg += f"Уже в списке: {', '.join([f'@{u}' for u in already_in])}"
+                await update.message.reply_text(msg)
+                logger.info(f"Администратор {user.username} добавил в белый список: {added}")
+            else:
+                # Откатываем изменения в памяти, если запись не удалась
+                for u in added:
+                    access_manager.whitelist.discard(u)
+                await update.message.reply_text("❌ Ошибка при обновлении файла белого списка на Google Drive. Изменения отменены.")
+
+        elif action == "remove":
+            removed = []
+            not_found = []
+            for u in usernames:
+                if u in access_manager.whitelist:
+                    access_manager.whitelist.discard(u)
+                    removed.append(u)
+                else:
+                    not_found.append(u)
+            
+            # Обновляем файл на Google Drive
+            success = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist))
+            if success:
+                msg = "✅ Белый список обновлён.\n"
+                if removed:
+                    msg += f"Удалены: {', '.join([f'@{u}' for u in removed])}\n"
+                if not_found:
+                    msg += f"Не найдены в списке: {', '.join([f'@{u}' for u in not_found])}"
+                await update.message.reply_text(msg)
+                logger.info(f"Администратор {user.username} удалил из белого списка: {removed}")
+            else:
+                # Откатываем изменения в памяти, если запись не удалась
+                for u in removed:
+                    access_manager.whitelist.add(u)
+                await update.message.reply_text("❌ Ошибка при обновлении файла белого списка на Google Drive. Изменения отменены.")
+    else:
+        await update.message.reply_text("Неизвестное действие. Используйте <code>show</code>, <code>add</code> или <code>remove</code>.", parse_mode=ParseMode.HTML)
+
+
+# --- Команда /blacklist ---
+async def manage_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Управление чёрным списком: добавить, удалить, показать.
+    Доступно только администраторам.
+    Использование:
+      /blacklist show
+      /blacklist add @username1 @username2
+      /blacklist remove @username1 @username2
+    """
+    if not update.message or not update.effective_user:
+        return
+    user = update.effective_user
+    if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
+        await update.message.reply_text(get_message('admin_only'))
+        return
+
+    if not access_manager:
+        await update.message.reply_text("❌ Система доступа не инициализирована.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Использование:\n"
+            "<code>/blacklist show</code> — показать список\n"
+            "<code>/blacklist add @username1 @username2</code> — добавить пользователей\n"
+            "<code>/blacklist remove @username1 @username2</code> — удалить пользователей",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    action = args[0].lower()
+    usernames = [u.lstrip('@').lower() for u in args[1:]] if len(args) > 1 else []
+
+    if action == "show":
+        if access_manager.blacklist:
+            blacklist_text = "\n".join([f"@{u}" for u in sorted(access_manager.blacklist)])
+            await update.message.reply_text(
+                f"<b>Чёрный список ({len(access_manager.blacklist)}):</b>\n<code>{blacklist_text}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await update.message.reply_text("Чёрный список пуст.")
+        return
+
+    elif action in ["add", "remove"]:
+        if not usernames:
+            await update.message.reply_text("Укажите хотя бы один username.")
+            return
+
+        # Проверка разрешений на запись в Google Drive перед изменением
+        gs = GoogleServices()
+        fm = FileManager(gs.drive)
+        can_write_whitelist = fm.check_write_permission(WHITELIST_FILE_ID)
+        can_write_blacklist = fm.check_write_permission(BLACKLIST_FILE_ID)
+
+        if not (can_write_whitelist and can_write_blacklist):
+             await update.message.reply_text(
+                "❌ Недостаточно прав для записи в файлы списков на Google Drive. Изменения не сохранены."
+                )
+             logger.warning(f"Администратор {user.username} попытался изменить списки, но у бота нет прав на запись.")
+             return
+
+        if action == "add":
+            added = []
+            already_in = []
+            for u in usernames:
+                if u not in access_manager.blacklist:
+                    access_manager.blacklist.add(u)
+                    # Автоматически удаляем из белого списка при добавлении в чёрный
+                    if u in access_manager.whitelist:
+                        access_manager.whitelist.discard(u)
+                    added.append(u)
+                else:
+                    already_in.append(u)
+            
+            # Обновляем файлы на Google Drive
+            success_black = fm.update_list_file(BLACKLIST_FILE_ID, sorted(access_manager.blacklist))
+            success_white = fm.update_list_file(WHITELIST_FILE_ID, sorted(access_manager.whitelist)) # Обновляем белый список тоже
+            
+            if success_black and success_white:
+                msg = "✅ Чёрный список обновлён.\n"
+                if added:
+                    msg += f"Добавлены: {', '.join([f'@{u}' for u in added])}\n"
+                if already_in:
+                    msg += f"Уже в списке: {', '.join([f'@{u}' for u in already_in])}"
+                await update.message.reply_text(msg)
+                logger.info(f"Администратор {user.username} добавил в чёрный список: {added}")
+            else:
+                # Откатываем изменения в памяти, если запись не удалась
+                for u in added:
+                    access_manager.blacklist.discard(u)
+                    # Восстанавливаем в белый список, если был удален
+                    if u in {u_orig for u_orig in access_manager.whitelist_orig if u_orig.lower() == u}: # Предполагается, что whitelist_orig хранит оригинальное состояние
+                         access_manager.whitelist.add(u)
+                await update.message.reply_text("❌ Ошибка при обновлении файлов списков на Google Drive. Изменения отменены.")
+
+        elif action == "remove":
+            removed = []
+            not_found = []
+            for u in usernames:
+                if u in access_manager.blacklist:
+                    access_manager.blacklist.discard(u)
+                    removed.append(u)
+                else:
+                    not_found.append(u)
+            
+            # Обновляем файл на Google Drive
+            success = fm.update_list_file(BLACKLIST_FILE_ID, sorted(access_manager.blacklist))
+            if success:
+                msg = "✅ Чёрный список обновлён.\n"
+                if removed:
+                    msg += f"Удалены: {', '.join([f'@{u}' for u in removed])}\n"
+                if not_found:
+                    msg += f"Не найдены в списке: {', '.join([f'@{u}' for u in not_found])}"
+                await update.message.reply_text(msg)
+                logger.info(f"Администратор {user.username} удалил из чёрного списка: {removed}")
+            else:
+                # Откатываем изменения в памяти, если запись не удалась
+                for u in removed:
+                    access_manager.blacklist.add(u)
+                await update.message.reply_text("❌ Ошибка при обновлении файла чёрного списка на Google Drive. Изменения отменены.")
+    else:
+        await update.message.reply_text("Неизвестное действие. Используйте <code>show</code>, <code>add</code> или <code>remove</code>.", parse_mode=ParseMode.HTML)
+
 # --- Ответы бота ---
 def get_message(message_code: str, **kwargs) -> str:
     """
@@ -783,6 +1031,55 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
             return []
+    def check_write_permission(self, file_id: str) -> bool:
+        """
+        Проверяет, есть ли у учетных данных бота права на редактирование файла.
+        Args:
+            file_id (str): ID файла в Google Drive
+        Returns:
+            bool: True, если есть права на запись, False в противном случае
+        """
+        try:
+            # Получаем информацию о файле, включая разрешения
+            info = self.drive.files().get(fileId=file_id, fields="capabilities/canEdit, permissions").execute()
+            can_edit = info.get('capabilities', {}).get('canEdit', False)
+            logger.debug(f"Проверка прав на запись для файла {file_id}: canEdit={can_edit}")
+            return can_edit
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки прав на запись для файла {file_id}: {e}")
+            return False
+
+    def update_list_file(self, file_id: str, usernames: List[str]) -> bool:
+        """
+        Обновляет содержимое текстового файла в Google Drive.
+        Args:
+            file_id (str): ID файла в Google Drive
+            usernames (List[str]): Список username для записи
+        Returns:
+            bool: True, если успешно, False в противном случае
+        """
+        try:
+            # 1. Сначала получаем метаданные файла, чтобы узнать его MIME-тип
+            file_metadata = self.drive.files().get(fileId=file_id, fields="mimeType, name").execute()
+            mime_type = file_metadata.get('mimeType', 'text/plain')
+            filename = file_metadata.get('name', 'list.txt')
+
+            # 2. Создаем новый контент
+            content = "\n".join([f"@{u}" for u in usernames]) + "\n" # Каждый юзер с новой строки, с @
+            media_body = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype=mime_type, resumable=True)
+
+            # 3. Обновляем файл
+            updated_file = self.drive.files().update(
+                fileId=file_id,
+                media_body=media_body
+            ).execute()
+
+            logger.info(f"✅ Файл списка {filename} (ID: {file_id}) успешно обновлён. Новое содержимое: {usernames}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка обновления файла списка {file_id}: {e}")
+            return False
+
 # --- Класс для поиска данных в Excel ---
 class LocalDataSearcher:
     """
@@ -1279,7 +1576,9 @@ def main():
     app.add_handler(CommandHandler("reload_lists", reload_lists))
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("refresh", refresh_file))
-    app.add_handler(CommandHandler("reset_bans", reset_bans))  # Добавляем команду /reset_bans
+    app.add_handler(CommandHandler("reset_bans", reset_bans))
+    app.add_handler(CommandHandler("whitelist", manage_whitelist))
+    app.add_handler(CommandHandler("blacklist", manage_blacklist))
 
     # Добавляем обработчик сообщений
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
