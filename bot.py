@@ -89,6 +89,12 @@ user_activity: Dict[str, Dict[str, deque]] = defaultdict(lambda: {
 # Блокировка пользователей (черный список)
 banned_users: Set[str] = set()
 
+# Время блокировки пользователей (в минутах)
+user_ban_times: Dict[str, int] = {}
+
+# Время начала блокировки
+user_ban_start_times: Dict[str, datetime] = {}
+
 # --- Функции для работы с учетными данными ---
 def get_credentials_path() -> str:
     """
@@ -270,8 +276,31 @@ def check_user_limit(username: str) -> bool:
     Returns:
         bool: True, если пользователь не заблокирован и лимиты не превышены
     """
+    # Проверяем, заблокирован ли пользователь
     if username in banned_users:
-        return False
+        # Проверяем, истекло ли время блокировки
+        if username in user_ban_start_times:
+            ban_duration = timedelta(minutes=user_ban_times.get(username, 10))
+            ban_start = user_ban_start_times[username]
+            if datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET) >= ban_start + ban_duration:
+                # Время блокировки истекло, разблокируем пользователя
+                unban_user(username)
+                logger.info(f"🔓 Пользователь {username} разблокирован автоматически")
+                # Удаляем информацию о блокировке
+                user_ban_start_times.pop(username, None)
+                user_ban_times.pop(username, None)
+                return True
+            else:
+                # Пользователь всё ещё заблокирован, выводим время до разблокировки
+                remaining_time = ban_start + ban_duration - (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET))
+                minutes_left = int(remaining_time.total_seconds() // 60)
+                logger.warning(f"⚠️ Пользователь {username} заблокирован. Осталось {minutes_left} минут")
+                return False
+        else:
+            # Время блокировки не указано, разблокируем
+            unban_user(username)
+            return True
+
     now = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     # Очищаем устаревшие записи
     for period, queue in user_activity[username].items():
@@ -300,8 +329,12 @@ def ban_user(username: str):
     Args:
         username (str): Имя пользователя Telegram
     """
+    # Определяем время блокировки (начинается с 10 минут, увеличивается на 10 каждые 10 минут)
+    ban_time = user_ban_times.get(username, 10)
+    user_ban_times[username] = ban_time + 10
+    user_ban_start_times[username] = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     banned_users.add(username)
-    logger.info(f"🔒 Пользователь {username} заблокирован за превышение лимита")
+    logger.info(f"🔒 Пользователь {username} заблокирован на {ban_time} минут")
 
 def unban_user(username: str):
     """
@@ -311,6 +344,9 @@ def unban_user(username: str):
     """
     banned_users.discard(username)
     logger.info(f"🔓 Пользователь {username} разблокирован")
+    # Удаляем информацию о блокировке
+    user_ban_start_times.pop(username, None)
+    user_ban_times.pop(username, None)
 
 def reset_user_limits(username: str):
     """
@@ -322,6 +358,9 @@ def reset_user_limits(username: str):
         for period in MESSAGE_LIMITS.keys():
             user_activity[username][period].clear()
     logger.info(f"🔄 Лимиты для пользователя {username} сброшены")
+    # Сбрасываем информацию о блокировке
+    user_ban_start_times.pop(username, None)
+    user_ban_times.pop(username, None)
 
 # --- Ответы бота ---
 def get_message(message_code: str, **kwargs) -> str:
@@ -341,12 +380,13 @@ def get_message(message_code: str, **kwargs) -> str:
         ),
         'help': (
             "О, смотри-ка — гость на складе!\n"
-            "Только не стой как лох у контейнера — говори, что надо.\n\n"
+            "Только не стой как лох у контейнера — говори, что надо.\n"
             "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
             "• <code>/restart</code> — перезапуск бота\n"
             "• <code>/refresh</code> — обновления файла склада\n"
+            "• <code>/reset_bans</code> — сброс банов\n"
             "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
         ),
         'invalid_number': (
@@ -397,6 +437,7 @@ def get_message(message_code: str, **kwargs) -> str:
             "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
             "• <code>/restart</code> — перезапуск бота\n"
             "• <code>/refresh</code> — обновления файла склада\n"
+            "• <code>/reset_bans</code> — сброс банов\n"
         ),
         'ddos_blocked': (
             "Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
@@ -629,7 +670,6 @@ async def reset_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user.username or user.username.lower() not in {u.lower() for u in ALLOWED_USERS}:
         await update.message.reply_text(get_message('admin_only'))
         return
-    
     # Получаем параметры команды
     args = context.args
     if not args:
@@ -637,19 +677,19 @@ async def reset_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Использование: /reset_bans <имя_пользователя или 'all'>"
         )
         return
-    
     target = args[0].lower()
     if target == 'all':
         # Сбросить все лимиты
         user_activity.clear()
         banned_users.clear()
+        user_ban_start_times.clear()
+        user_ban_times.clear()
         await update.message.reply_text(get_message('reset_all_success'))
         logger.info(f"🔄 Администратор {user.username} сбросил все лимиты")
     else:
         # Сбросить лимиты для конкретного пользователя
         username = target.lstrip('@')  # Убираем @ если есть
         reset_user_limits(username)
-        unban_user(username)
         await update.message.reply_text(
             get_message('reset_success', username=username)
         )
@@ -903,16 +943,26 @@ async def handle_search(update: Update, query: str):
                 get_message('access_denied')
             )
             return
-    
     # Проверяем лимиты DDoS
     username = user.username if user.username else str(user.id)
     if not check_user_limit(username):
-        await update.message.reply_text(
-            get_message('ddos_blocked'),
-            parse_mode='HTML'
-        )
+        # Получаем время до разблокировки
+        ban_start = user_ban_start_times.get(username)
+        ban_time = user_ban_times.get(username, 10)
+        if ban_start:
+            remaining_time = ban_start + timedelta(minutes=ban_time) - (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET))
+            minutes_left = int(remaining_time.total_seconds() // 60)
+            await update.message.reply_text(
+                f"Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
+                f"Пожалуйста, подожди {minutes_left} минут и попробуй снова.",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                get_message('ddos_blocked'),
+                parse_mode='HTML'
+            )
         return
-    
     # Извлекаем серийный номер
     number = extract_number(query)
     if not number:
@@ -1084,7 +1134,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username.lower()
     chat_type = update.message.chat.type
     user = update.effective_user
-    
     # Проверяем доступ в приватном чате
     if chat_type == 'private':
         if not user.username or not access_manager.is_allowed(user.username.lower()):
@@ -1092,16 +1141,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 get_message('access_denied')
             )
             return
-        
         # Проверяем лимиты DDoS
         username = user.username if user.username else str(user.id)
         if not check_user_limit(username):
-            await update.message.reply_text(
-                get_message('ddos_blocked'),
-                parse_mode='HTML'
-            )
+            # Получаем время до разблокировки
+            ban_start = user_ban_start_times.get(username)
+            ban_time = user_ban_times.get(username, 10)
+            if ban_start:
+                remaining_time = ban_start + timedelta(minutes=ban_time) - (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET))
+                minutes_left = int(remaining_time.total_seconds() // 60)
+                await update.message.reply_text(
+                    f"Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
+                    f"Пожалуйста, подожди {minutes_left} минут и попробуй снова.",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    get_message('ddos_blocked'),
+                    parse_mode='HTML'
+                )
             return
-        
         # Обработка команды /s
         if text.startswith("/s"):
             query = text[2:].strip()
@@ -1126,18 +1185,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
         return
-    
     # В групповых чатах (group/supergroup) — только команды и упоминания
     if chat_type in ['group', 'supergroup']:
         # Проверяем лимиты DDoS
         username = user.username if user.username else str(user.id)
         if not check_user_limit(username):
-            await update.message.reply_text(
-                get_message('ddos_blocked'),
-                parse_mode='HTML'
-            )
+            # Получаем время до разблокировки
+            ban_start = user_ban_start_times.get(username)
+            ban_time = user_ban_times.get(username, 10)
+            if ban_start:
+                remaining_time = ban_start + timedelta(minutes=ban_time) - (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET))
+                minutes_left = int(remaining_time.total_seconds() // 60)
+                await update.message.reply_text(
+                    f"Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
+                    f"Пожалуйста, подожди {minutes_left} минут и попробуй снова.",
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    get_message('ddos_blocked'),
+                    parse_mode='HTML'
+                )
             return
-        
         # Проверяем, является ли сообщение командой
         if text.startswith("/s"):
             # Проверим, адресована ли команда именно этому боту
