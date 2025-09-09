@@ -1261,32 +1261,32 @@ class LocalDataSearcher:
                 issue_status_lower = issue_status.lower()
                 # Формируем базовые поля
                 response_parts = [
-                    f"<b>СН:</b> <code>{sn}</code>",
-                    f"<b>Тип оборудования:</b> <code>{equipment_type}</code>",
-                    f"<b>Модель терминала:</b> <code>{model}</code>",
+                    f"<b>СН:</b> <code>{sn}</code>/n",
+                    f"<b>Тип оборудования:</b> <code>{equipment_type}</code>/n",
+                    f"<b>Модель терминала:</b> <code>{model}</code>/n",
                 ]
                 # --- Логика по статусу ---
                 if status_lower == "на складе":
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>/n")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>/n")
                 elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code> — как труп в багажнике")
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code> — можно разобрать на запчасти")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code> — как труп в багажнике/n")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code> — можно разобрать на запчасти/n")
                 elif status_lower == "зарезервировано":
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>/n")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>/n")
                     if issue_status_lower == "выдан":
                         # Показываем всё: место, инженера, дату
-                        response_parts.append(f"<b>Заявка:</b> <code>{request_num}</code>")
-                        response_parts.append(f"<b>Выдан инженеру:</b> <code>{engineer}</code>")
-                        response_parts.append(f"<b>Дата выдачи:</b> <code>{issue_date}</code>")
+                        response_parts.append(f"<b>Заявка:</b> <code>{request_num}</code>/n")
+                        response_parts.append(f"<b>Выдан инженеру:</b> <code>{engineer}</code>/n")
+                        response_parts.append(f"<b>Дата выдачи:</b> <code>{issue_date}</code>/n")
                     # Если не выдан — ничего больше не добавляем
                 else:
                     # Все остальные статусы: просто показываем статус
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>/n")
                     # Можно добавить место, если нужно, но по ТЗ — не требуется
                 # Формируем итоговый текст
-                header = "ℹ️ <b>Информация о терминале</b>"
+                header = "ℹ️ <b>Информация о терминале</b>/n"
                 result_text = header + "" + "".join(response_parts)
                 results.append(result_text)
             wb.close()
@@ -1335,8 +1335,8 @@ async def handle_search(update: Update, query: str, user=None, username=None):
             remaining_time = ban_start + timedelta(minutes=ban_time) - (datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET))
             minutes_left = int(remaining_time.total_seconds() // 60)
             await update.message.reply_text(
-                f"Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
-                f"Пожалуйста, подожди {minutes_left} минут и попробуй снова.",
+                f"Стопэ! Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
+                f"Абажди {minutes_left} минут и попробуй снова.",
                 parse_mode='HTML'
             )
         else:
