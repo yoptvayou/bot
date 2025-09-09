@@ -1,13 +1,3 @@
-"""
-Telegram бот для поиска информации по серийным номерам в Excel файлах на Google Drive.
-Основные функции:
-- Поиск терминалов по серийному номеру (СН) в кэшированных Excel файлах
-- Управление доступом через черный и белый списки пользователей
-- Защита от DDoS атак
-- Обновление файлов из Google Drive
-- Команды администратора для перезапуска, обновления списков и сброса банов
-"""
-
 # --- Импорты ---
 import atexit
 import logging
@@ -18,7 +8,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Set
 from collections import defaultdict, deque
-from telegram import Update
+from telegram import Update, Message
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -29,73 +19,53 @@ import sys
 import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-
 # --- Подавление предупреждений от openpyxl ---
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
-
 # --- Настройка логирования ---
 # Конфигурация логирования для отслеживания действий бота
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO # Можно установить DEBUG для более подробных логов
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
 # --- Конфигурация ---
 # Константа для города, используется в поиске файлов
 CITY = 'Воронеж'
-
 # Разрешения для Google Drive API
 SCOPES = ['https://www.googleapis.com/auth/drive']
-
 # Путь к директории для хранения локальных кэшированных файлов
 LOCAL_CACHE_DIR = "./local_cache"
-
 # --- Глобальные переменные ---
 # Путь к файлу учетных данных Google
 CREDENTIALS_FILE: str = ""
-
 # Токен Telegram бота
 TELEGRAM_TOKEN: str = ""
-
 # ID родительской папки в Google Drive
 PARENT_FOLDER_ID: str = ""
-
 # ID временной папки в Google Drive
 TEMP_FOLDER_ID: str = ""
-
 # ID корневой папки года в Google Drive
 ROOT_FOLDER_YEAR: str = ""
-
 # ID файла черного списка пользователей
 BLACKLIST_FILE_ID: str = ""
-
 # ID файла белого списка пользователей
 WHITELIST_FILE_ID: str = ""
-
 # Часовой пояс (по умолчанию UTC)
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", 3))  # Часы от UTC (например, 3 для MSK)
-
 # ID последнего загруженного файла
 LAST_FILE_ID: Optional[str] = None
-
 # Дата последнего файла
 LAST_FILE_DATE: Optional[datetime] = None
-
 # Время последнего изменения файла в Google Drive
 LAST_FILE_DRIVE_TIME: Optional[datetime] = None
-
 # Локальный путь к последнему файлу
 LAST_FILE_LOCAL_PATH: Optional[str] = None
-
 # Пул потоков для параллельной обработки
 executor = ThreadPoolExecutor(max_workers=4)
-
 # --- Разрешённые пользователи (администраторы) ---
 # Список пользователей с правами администратора
 ALLOWED_USERS = {'tupikin_ik', 'yoptvayou'}
-
 # --- Защита от DDoS ---
 # Лимиты сообщений (количество сообщений за период)
 MESSAGE_LIMITS = {
@@ -103,23 +73,18 @@ MESSAGE_LIMITS = {
     'hour': 100,    # 100 сообщений в час
     'day': 1000     # 1000 сообщений в день
 }
-
 # Хранилище для отслеживания активности пользователей
 user_activity: Dict[str, Dict[str, deque]] = defaultdict(lambda: {
     'minute': deque(),
     'hour': deque(),
     'day': deque()
 })
-
 # Блокировка пользователей (черный список)
 banned_users: Set[str] = set()
-
 # Время блокировки пользователей (в минутах)
 user_ban_times: Dict[str, int] = {}
-
 # Время начала блокировки
 user_ban_start_times: Dict[str, datetime] = {}
-
 # --- Функции для работы с учетными данными ---
 def get_credentials_path() -> str:
     """
@@ -147,7 +112,6 @@ def get_credentials_path() -> str:
     except Exception as e:
         logger.error(f"❌ Ошибка декодирования GOOGLE_CREDS_BASE64: {e}")
         raise
-
 def init_config():
     """
     Инициализация конфигурации бота из переменных окружения.
@@ -156,16 +120,16 @@ def init_config():
     """
     global CREDENTIALS_FILE, TELEGRAM_TOKEN, PARENT_FOLDER_ID, TEMP_FOLDER_ID, ROOT_FOLDER_YEAR, BLACKLIST_FILE_ID, WHITELIST_FILE_ID, TIMEZONE_OFFSET
     # Получаем путь к учетным данным
-    CREDENTIALS_FILE = get_credentials_path()    
+    CREDENTIALS_FILE = get_credentials_path()
     # Получаем токен Telegram бота
-    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")    
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
     # Получаем ID родительской папки
-    PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")    
+    PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID", "")
     # Получаем ID временной папки
-    TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")    
+    TEMP_FOLDER_ID = os.getenv("TEMP_FOLDER_ID", "")
     # Получаем ID файлов черного и белого списков
     BLACKLIST_FILE_ID = os.getenv("BLACKLIST_FILE_ID", "")
-    WHITELIST_FILE_ID = os.getenv("WHITELIST_FILE_ID", "")    
+    WHITELIST_FILE_ID = os.getenv("WHITELIST_FILE_ID", "")
     # Получаем часовой пояс
     TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", 3))
     # Устанавливаем год для корневой папки
@@ -181,7 +145,6 @@ def init_config():
     # Создаем директорию для кэширования
     os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
     logger.info(f"📁 Локальный кэш: {os.path.abspath(LOCAL_CACHE_DIR)}")
-
 # --- Класс для работы с Google API ---
 class GoogleServices:
     """
@@ -191,7 +154,6 @@ class GoogleServices:
     """
     # Статический атрибут для хранения экземпляра класса
     _instance = None
-
     def __new__(cls):
         """
         Переопределение метода __new__ для реализации паттерна Singleton.
@@ -205,7 +167,6 @@ class GoogleServices:
             # Инициализируем сервис Google Drive
             cls._instance.drive = build('drive', 'v3', credentials=creds)
         return cls._instance
-
 # --- Класс управления доступом ---
 class AccessManager:
     """
@@ -221,7 +182,6 @@ class AccessManager:
         self.drive = drive_service
         self.blacklist = set()
         self.whitelist = set()
-
     def download_list(self, file_id: str) -> List[str]:
         """
         Скачивает список пользователей из Google Drive файла.
@@ -252,7 +212,6 @@ class AccessManager:
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки списка из файла {file_id}: {e}")
             return []
-
     def update_lists(self):
         """
         Обновляет черный и белый списки пользователей из Google Drive файлов.
@@ -269,7 +228,6 @@ class AccessManager:
             logger.info(f"✅ Загружен чёрный список: {len(self.blacklist)} пользователей")
         else:
             logger.warning("⚠️ BLACKLIST_FILE_ID не задан — чёрный список пуст")
-
     def is_allowed(self, username: str) -> bool:
         """
         Проверяет, разрешен ли доступ пользователю.
@@ -292,10 +250,8 @@ class AccessManager:
             return False
         # Если белый список пуст — разрешаем всех, кроме чёрного
         return True
-
 # Глобальная переменная для менеджера доступа
 access_manager: Optional[AccessManager] = None
-
 # --- Функции защиты от DDoS ---
 def check_user_limit(username: str) -> bool:
     """
@@ -350,7 +306,6 @@ def check_user_limit(username: str) -> bool:
     for period in MESSAGE_LIMITS.keys():
         user_activity[username][period].append(now)
     return True
-
 def ban_user(username: str):
     """
     Блокирует пользователя.
@@ -363,7 +318,6 @@ def ban_user(username: str):
     user_ban_start_times[username] = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     banned_users.add(username)
     logger.info(f"🔒 Пользователь {username} заблокирован на {ban_time} минут")
-
 def unban_user(username: str):
     """
     Разблокирует пользователя.
@@ -375,7 +329,6 @@ def unban_user(username: str):
     # Удаляем информацию о блокировке
     user_ban_start_times.pop(username, None)
     user_ban_times.pop(username, None)
-
 def reset_user_limits(username: str):
     """
     Сбрасывает лимиты для пользователя.
@@ -389,7 +342,6 @@ def reset_user_limits(username: str):
     # Сбрасываем информацию о блокировке
     user_ban_start_times.pop(username, None)
     user_ban_times.pop(username, None)
-
 # --- Ответы бота ---
 def get_message(message_code: str, **kwargs) -> str:
     """
@@ -409,19 +361,17 @@ def get_message(message_code: str, **kwargs) -> str:
         'help': (
             "О, смотри-ка — гость на складе!\n"
             "Только не стой как лох у контейнера — говори, что надо.\n"
-            "• <code>/s 123456</code> — найти терминал по СН\n"
-            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"
+            "\n"
+            "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
             "• <code>/restart</code> — перезапуск бота\n"
             "• <code>/refresh</code> — обновления файла склада\n"
-            "• <code>/reset_bans</code> — сброс банов\n"
             "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
         ),
         'invalid_number': (
             "Ты чё, братан, по пьяни печатаешь?\n"
             "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
-            "Можно указать несколько СН через запятую: <code>AB123456, CD789012</code>\n"
             "Попробуй ещё раз, а то выкину в реку."
         ),
         'search_start': (
@@ -456,9 +406,8 @@ def get_message(message_code: str, **kwargs) -> str:
             "Попробуй позже."
         ),
         'missing_number': (
-            "Укажи серийный номер(я) после команды.\n"
-            "Пример: <code>/s AB123456</code>\n"
-            "или для нескольких: <code>/s AB123456, CD789012</code>"
+            "Укажи серийный номер после команды.\n"
+            "Пример: <code>/s AB123456</code>"
         ),
         'unknown_command': (
             "Неизвестная команда.\n"
@@ -468,7 +417,6 @@ def get_message(message_code: str, **kwargs) -> str:
             "• <code>/reload_lists</code> — перезагрузить списки доступа\n"
             "• <code>/restart</code> — перезапуск бота\n"
             "• <code>/refresh</code> — обновления файла склада\n"
-            "• <code>/reset_bans</code> — сброс банов\n"
         ),
         'ddos_blocked': (
             "Ты слишком быстро пишешь! Тебе нужно немного передышки.\n"
@@ -490,7 +438,6 @@ def get_message(message_code: str, **kwargs) -> str:
     # Получаем сообщение по коду и форматируем его с параметрами
     message = messages.get(message_code, "Неизвестное сообщение")
     return message.format(**kwargs) if kwargs else message
-
 def preload_latest_file():
     """
     При старте бота ищет и загружает последний файл из архива.
@@ -556,7 +503,6 @@ def preload_latest_file():
     LAST_FILE_DATE = None
     LAST_FILE_DRIVE_TIME = None
     LAST_FILE_LOCAL_PATH = None
-
 def extract_number(query: str) -> Optional[str]:
     """
     Извлекает серийный номер из строки запроса.
@@ -573,7 +519,6 @@ def extract_number(query: str) -> Optional[str]:
     if clean and re.fullmatch(r'[A-Za-z0-9\-]+', clean):
         return clean.upper()  # Приводим к верхнему регистру для единообразия
     return None
-
 # --- Обработчики команд ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -591,7 +536,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_message('access_denied'))
         return
     await update.message.reply_text(get_message('help'), parse_mode='HTML')
-
 # Обработчик команды /restart ---
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -616,7 +560,6 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при перезапуске бота: {e}")
         await update.message.reply_text("❌ Произошла ошибка при перезагрузке бота.")
-
 async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Показать содержимое папки в Google Drive.
@@ -636,7 +579,7 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fm = FileManager(gs.drive)
         root_id = PARENT_FOLDER_ID
         items = fm.list_files_in_folder(root_id, max_results=100)
-        text = f"🗂 <b>Корневая папка</b> (ID: <code>{root_id}</code>)\n"
+        text = f"🗂 <b>Корневая папка</b> (ID: <code>{root_id}</code>)"
         # Формируем текст ответа
         if not items:
             text += "Здесь даже паук не селится — пусто."
@@ -644,22 +587,21 @@ async def show_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
             folders = [i for i in items if i['mimeType'] == 'application/vnd.google-apps.folder']
             files = [i for i in items if i['mimeType'] != 'application/vnd.google-apps.folder']
             if folders:
-                text += "<b>Подпапки:</b>\n"
+                text += "<b>Подпапки:</b>"
                 for f in sorted(folders, key=lambda x: x['name'].lower()):
-                    text += f"📁 <code>{f['name']}/</code>\n"
-                text += "\n"
+                    text += f"📁 <code>{f['name']}/</code>"
+                text += ""
             if files:
-                text += "<b>Файлы:</b>\n"
+                text += "<b>Файлы:</b>"
                 for f in sorted(files, key=lambda x: x['name'].lower()):
                     size = f" ({f['size']} байт)" if f.get('size') else ""
-                    text += f"📄 <code>{f['name']}</code>{size}\n"
+                    text += f"📄 <code>{f['name']}</code>{size}"
         await update.message.reply_text(text, parse_mode='HTML')
     except Exception as e:
         logger.error(f"❌ Ошибка /path: {e}")
         await update.message.reply_text(
             get_message('search_error')
         )
-
 async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Перезагрузка чёрного и белого списков.
@@ -682,10 +624,9 @@ async def reload_lists(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ Списки успешно перезагружены.\n"
         f"Белый список: {len(access_manager.whitelist)} пользователей\n"
-        f"Чёрный список: {len(access_manager.blacklist)} пользователей"
+        f"Чёрный список: {len(access_manager.blacklist)} пользователей\n"
     )
     logger.info(f"🔄 Администратор {user.username} перезагрузил списки доступа.")
-
 # --- Команда /reset_bans ---
 async def reset_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -725,7 +666,6 @@ async def reset_bans(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_message('reset_success', username=username)
         )
         logger.info(f"🔄 Администратор {user.username} сбросил лимиты для пользователя {username}")
-
 # --- Класс для работы с Google Drive файлами ---
 class FileManager:
     """
@@ -739,7 +679,6 @@ class FileManager:
             drive: Сервис Google Drive
         """
         self.drive = drive
-
     def find_folder(self, parent_id: str, name: str) -> Optional[str]:
         """
         Ищет папку по имени в заданной родительской папке.
@@ -762,7 +701,6 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска папки '{name}': {e}")
             return None
-
     def find_file(self, folder_id: str, filename: str) -> Optional[str]:
         """
         Ищет файл по имени в заданной папке.
@@ -785,7 +723,6 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска файла '{filename}': {e}")
             return None
-
     def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
         """
         Получает время модификации файла.
@@ -806,7 +743,6 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения времени файла {file_id}: {e}")
             return None
-
     def download_file(self, file_id: str, local_path: str) -> bool:
         """
         Скачивает файл из Google Drive в локальную директорию.
@@ -830,7 +766,6 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка при скачивании файла ID={file_id} в {local_path}: {e}")
             return False
-
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict]:
         """
         Получает список файлов и папок в заданной папке.
@@ -848,7 +783,6 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка списка файлов в папке {folder_id}: {e}")
             return []
-
 # --- Класс для поиска данных в Excel ---
 class LocalDataSearcher:
     """
@@ -868,7 +802,6 @@ class LocalDataSearcher:
         loop = asyncio.get_event_loop()
         # Выполняем синхронную операцию в пуле потоков
         return await loop.run_in_executor(executor, LocalDataSearcher._search_by_number_sync, filepath, number)
-
     @staticmethod
     def _search_by_number_sync(filepath: str, number: str) -> List[str]:
         """
@@ -917,7 +850,7 @@ class LocalDataSearcher:
                 storage = str(row[13]).strip() if row[13] else "Не указано"
                 issue_status = str(row[14]).strip() if row[14] else ""
                 engineer = str(row[15]).strip() if row[15] else "Не указано"
-                issue_date = str(row[16]).strip() if row[16] else "Не указано"                
+                issue_date = str(row[16]).strip() if row[16] else "Не указано"
                 # Регистронезависимые проверки
                 status_lower = status.lower()
                 issue_status_lower = issue_status.lower()
@@ -949,7 +882,7 @@ class LocalDataSearcher:
                     # Можно добавить место, если нужно, но по ТЗ — не требуется
                 # Формируем итоговый текст
                 header = "ℹ️ <b>Информация о терминале</b>"
-                result_text = header + "\n" + "\n".join(response_parts)
+                result_text = header + "" + "".join(response_parts)
                 results.append(result_text)
             wb.close()
             # Логирование результата поиска
@@ -964,27 +897,30 @@ class LocalDataSearcher:
         except Exception as e:
             logger.error(f"❌ Неожиданная ошибка при чтении Excel {filepath}: {e}", exc_info=True)
         return results
-
 async def handle_search(update: Update, query: str, user=None, username=None):
     """
     Общая логика поиска терминала по серийному номеру.
     Args:
         update (Update): Объект обновления от Telegram
         query (str): Запрос пользователя
+        user (User, optional): Объект пользователя (если известен)
+        username (str, optional): Username пользователя (если известен)
     """
+    # Определяем пользователя, если не передан
+    if user is None:
+        user = update.effective_user
+    if username is None:
+        username = user.username if user.username else str(user.id)
+
     # Проверяем доступ в приватном чате
     if update.message.chat.type == 'private':
-        user = update.effective_user
         if not user.username or not access_manager.is_allowed(user.username.lower()):
             await update.message.reply_text(
                 get_message('access_denied')
             )
             return
-    # Проверяем лимиты DDoS
-    if user is None:
-        user = update.effective_user
-        username = user.username if user.username else str(user.id)
 
+    # Проверяем лимиты DDoS
     if not check_user_limit(username):
         # Получаем время до разблокировки
         ban_start = user_ban_start_times.get(username)
@@ -1003,10 +939,10 @@ async def handle_search(update: Update, query: str, user=None, username=None):
                 parse_mode='HTML'
             )
         return
+
     # Извлекаем серийные номера (разделенные запятой)
     numbers = [extract_number(num_str) for num_str in query.split(',')]
     numbers = [num for num in numbers if num]  # Убираем пустые значения
-
     if not numbers:
         await update.message.reply_text(
             get_message('invalid_number'),
@@ -1050,6 +986,7 @@ async def handle_search(update: Update, query: str, user=None, username=None):
         except Exception as e:
             logger.error(f"❌ Ошибка отправки сообщения: {e}")
         return
+
     # Получаем актуальное время файла в Google Drive
     try:
         gs = GoogleServices()
@@ -1091,6 +1028,7 @@ async def handle_search(update: Update, query: str, user=None, username=None):
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения: {e_inner}")
+
     # Поиск по локальному файлу
     try:
         # Используем асинхронный поиск для каждого номера
@@ -1099,7 +1037,6 @@ async def handle_search(update: Update, query: str, user=None, username=None):
         for number in numbers:
             results = await lds.search_by_number_async(LAST_FILE_LOCAL_PATH, number)
             all_results.extend(results)
-        
         if not all_results:
             if len(numbers) == 1:
                 await update.message.reply_text(
@@ -1112,12 +1049,12 @@ async def handle_search(update: Update, query: str, user=None, username=None):
                     parse_mode='HTML'
                 )
             return
-        
+
         # Отправляем результаты по одному
         for result in all_results:
             try:
                 if len(result) > 4096:
-                    truncated = result[:4050] + "\n<i>... (обрезано)</i>"
+                    truncated = result[:4050] + "<i>... (обрезано)</i>"
                     await update.message.reply_text(truncated, parse_mode='HTML')
                 else:
                     await update.message.reply_text(result, parse_mode='HTML')
@@ -1125,7 +1062,7 @@ async def handle_search(update: Update, query: str, user=None, username=None):
                 logger.error(f"❌ Ошибка отправки результата: {e}")
                 try:
                     await update.message.reply_text(
-                        "Нашёл терминал, но не могу показать — что-то сломалось.\n"
+                        "Нашёл терминал, но не могу показать — что-то сломалось./n"
                         "Попробуй позже или скажи админу."
                     )
                 except Exception as e_inner:
@@ -1138,7 +1075,6 @@ async def handle_search(update: Update, query: str, user=None, username=None):
             )
         except Exception as e_inner:
             logger.error(f"❌ Ошибка отправки сообщения об ошибке чтения: {e_inner}")
-
 # Обработчик команды /refresh ---
 async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1181,8 +1117,6 @@ async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Ошибка при обновлении файла: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обновлении файла.")
-
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработка сообщений: только команды и упоминания в чатах.
@@ -1195,23 +1129,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
     bot_username = context.bot.username.lower() if context.bot.username else ""
+    chat_type = update.message.chat.type
+    user = update.effective_user
 
     logger.info(f"DEBUG: bot_username = '{bot_username}'")
     logger.info(f"DEBUG: text = '{text}'")
+    logger.info(f"DEBUG: chat_type = '{chat_type}'")
 
-    if not update.message or not update.message.text:
-        return
-    text = update.message.text.strip()
-    bot_username = context.bot.username.lower()
-    chat_type = update.message.chat.type
-    user = update.effective_user
     # Проверяем доступ в приватном чате
     if chat_type == 'private':
         if not user.username or not access_manager.is_allowed(user.username.lower()):
-            await update.message.reply_text(
-                get_message('access_denied')
-            )
+            await update.message.reply_text(get_message('access_denied'))
             return
+
         # Проверяем лимиты DDoS
         username = user.username if user.username else str(user.id)
         if not check_user_limit(username):
@@ -1227,45 +1157,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
             else:
-                await update.message.reply_text(
-                    get_message('ddos_blocked'),
-                    parse_mode='HTML'
-                )
+                await update.message.reply_text(get_message('ddos_blocked'), parse_mode='HTML')
             return
+
         # Обработка команды /s
-        elif text.startswith("/s"):
+        if text.startswith("/s"):
             query = text[2:].strip()
             if not query:
-                await update.message.reply_text(
-                    get_message('missing_number'),
-                    parse_mode='HTML'
-                )
+                await update.message.reply_text(get_message('missing_number'), parse_mode='HTML')
                 return
-            # --- ИСПРАВЛЕНИЕ ---
-            # Определяем username перед вызовом handle_search
-            if user is None:
-                user = update.effective_user
-            username = user.username if user.username else str(user.id)
             await handle_search(update, query, user, username)
             return
+
         # Обработка других команд
         elif text.startswith('/'):
-            await update.message.reply_text(
-                get_message('unknown_command'),
-                parse_mode='HTML'
-            )
+            await update.message.reply_text(get_message('unknown_command'), parse_mode='HTML')
         else:
             # Отправляем помощь для обычных сообщений
-            await update.message.reply_text(
-                get_message('help'),
-                parse_mode='HTML'
-            )
+            await update.message.reply_text(get_message('help'), parse_mode='HTML')
         return
+
     # В групповых чатах (group/supergroup) — только команды и упоминания
     if chat_type in ['group', 'supergroup']:
         # Проверяем лимиты DDoS
         username = user.username if user.username else str(user.id)
-
         if not check_user_limit(username):
             # Получаем время до разблокировки
             ban_start = user_ban_start_times.get(username)
@@ -1279,33 +1194,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
             else:
+                await update.message.reply_text(get_message('ddos_blocked'), parse_mode='HTML')
+            return
+
+        # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
+        # 1. Обработка команды /s в группе (например, /s 123456)
+        if text.startswith("/s"):
+            query = text[2:].strip()
+            if not query:
+                await update.message.reply_text(get_message('missing_number'), parse_mode='HTML')
+                return
+            await handle_search(update, query, user, username)
+            return # Завершаем обработку после команды
+
+        # 2. Обработка упоминания бота в группе (например, @Sklad_bot 123456)
+        #    Это должно быть вне условия text.startswith("/s")
+        mention_match = re.search(rf'@{re.escape(bot_username)}\s+(.+)', text, re.IGNORECASE)
+        if mention_match:
+            query = mention_match.group(1).strip()
+            if not query:
                 await update.message.reply_text(
-                    get_message('ddos_blocked'),
+                    "Укажи серийный номер после упоминания бота.\n"
+                    f"Пример: @{context.bot.username} AB123456",
                     parse_mode='HTML'
                 )
-            return
-        # Проверяем, является ли сообщение командой
-        if text.startswith("/s"):
-            # Проверяем упоминание: @Sklad_bot ...
-            # Для групп и супергрупп
-            mention_match = re.search(rf'@{re.escape(bot_username)}\s+(.+)', text, re.IGNORECASE)
-            if mention_match:
-                query = mention_match.group(1).strip()
-                if not query:
-                    await update.message.reply_text(
-                        "Укажи серийный номер после упоминания бота.\n"
-                        "Пример: @Sklad_bot AB123456",
-                        parse_mode='HTML'
-                    )
-                    return
-                    # --- ИСПРАВЛЕНИЕ ---
-                    # Извлекаем username из user объекта
-                    username = user.username if user.username else str(user.id)
-                    await handle_search(update, query, user, username) # передаем username
-                    return
-                #    Все остальные сообщения — игнорируем
                 return
-    # Для каналов (channel) — только упоминания
+            # --- ИСПРАВЛЕНИЕ ---
+            # Извлекаем username из user объекта (уже есть выше)
+            # username = user.username if user.username else str(user.id) # Уже определено
+            await handle_search(update, query, user, username) # передаем username
+            return # Завершаем обработку после упоминания
+
+        # Все остальные сообщения в группе — игнорируем
+        return
+
+    # Для каналов (channel) — только упоминания (если бот добавлен как админ)
     if chat_type == 'channel':
         # Проверяем упоминание: @Sklad_bot ...
         username = user.username if user.username else str(user.id)
@@ -1313,19 +1236,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if mention_match:
             query = mention_match.group(1).strip()
             if not query:
-                await update.message.reply_text(
-                    "Укажи серийный номер после упоминания бота.\n"
-                    "Пример: @Sklad_bot AB123456",
-                    parse_mode='HTML'
-                )
+                # Отправка сообщений в каналы может быть ограничена
+                logger.warning("Попытка ответить в канале на пустой запрос. Это может не сработать.")
+                # Можно попробовать reply_text, но часто не работает. Лучше логировать.
+                # await update.message.reply_text(...) # Можем не иметь права отвечать
+                logger.info("Получено упоминание в канале с пустым запросом.")
                 return
-                # --- ИСПРАВЛЕНИЕ ---
-                # Извлекаем username из user объекта
-                username = user.username if user.username else str(user.id)
-                await handle_search(update, query, user, username) # передаем username
-                return
-            #    Все остальные сообщения — игнорируем
+            await handle_search(update, query, user, username) # передаем username
             return
+        # Все остальные сообщения в канале — игнорируем
+        return
 
 def main():
     """
@@ -1337,26 +1257,33 @@ def main():
     except Exception as e:
         logger.critical(f"❌ Критическая ошибка: {e}")
         return
+
     # Создаем приложение Telegram бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
     # Инициализация AccessManager
     global access_manager
     gs = GoogleServices()
     access_manager = AccessManager(gs.drive)
-    access_manager.update_lists() 
+    access_manager.update_lists()
+
     # Предзагружаем последний файл
     preload_latest_file()
+
     # Регистрируем функцию для удаления временного файла при выходе
     atexit.register(lambda: os.remove("temp_google_creds.json") if os.path.exists("temp_google_creds.json") else None)
+
     # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("path", show_path)) 
+    app.add_handler(CommandHandler("path", show_path))
     app.add_handler(CommandHandler("reload_lists", reload_lists))
     app.add_handler(CommandHandler("restart", restart_bot))
     app.add_handler(CommandHandler("refresh", refresh_file))
     app.add_handler(CommandHandler("reset_bans", reset_bans))  # Добавляем команду /reset_bans
+
     # Добавляем обработчик сообщений
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
+
     logger.info("🚀 Бот запущен. Готов к работе.")
     app.run_polling()
 
