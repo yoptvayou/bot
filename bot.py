@@ -1179,6 +1179,7 @@ async def refresh_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка при обновлении файла: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обновлении файла.")
 
+# --- Изменения в функции handle_message ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработка сообщений: только команды и упоминания в чатах.
@@ -1192,7 +1193,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username.lower()
     chat_type = update.message.chat.type
     user = update.effective_user
-    
     # Проверяем доступ в приватном чате
     if chat_type == 'private':
         if not user.username or not access_manager.is_allowed(user.username.lower()):
@@ -1220,36 +1220,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
             return
-        
         # Обработка команды /s
         if text.startswith("/s"):
             query = text[2:].strip()
             if not query:
                 await update.message.reply_text(
-                get_message('missing_number'),
-                parse_mode='HTML'
+                    get_message('missing_number'),
+                    parse_mode='HTML'
                 )
+                return
+            await handle_search(update, query)
             return
-        await handle_search(update, query)
-        return
-
-        await handle_search(update, query)
-        return
-        
-    # Обработка других команд
-    elif text.startswith('/'):
-        await update.message.reply_text(
+        # Обработка других команд
+        elif text.startswith('/'):
+            await update.message.reply_text(
                 get_message('unknown_command'),
                 parse_mode='HTML'
             )
-    else:
-         # Отправляем помощь для обычных сообщений
-        await update.message.reply_text(
+        else:
+            # Отправляем помощь для обычных сообщений
+            await update.message.reply_text(
                 get_message('help'),
                 parse_mode='HTML'
-        )
+            )
         return
-    
     # В групповых чатах (group/supergroup) — только команды и упоминания
     if chat_type in ['group', 'supergroup']:
         # Проверяем лимиты DDoS
@@ -1276,7 +1270,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text.startswith("/s"):
             # Проверим, адресована ли команда именно этому боту
             if f"@{bot_username}" in text.split()[0] or not ' ' in text:  # /s@bot или /s текст
-                query = re.sub(r'^/s(?:@[\w_]+)?\s*', '', text).strip()
+                # Исправленный код для извлечения query
+                if f"@{bot_username}" in text.split()[0]:
+                    # /s@bot текст
+                    query = text[len(f"/s@{bot_username}"):].strip()
+                else:
+                    # /s текст
+                    query = text[2:].strip()
                 if not query:
                     await update.message.reply_text(
                         get_message('missing_number'),
