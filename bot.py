@@ -1132,9 +1132,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.message.chat.type
     user = update.effective_user
 
-    logger.info(f"DEBUG: bot_username = '{bot_username}'")
-    logger.info(f"DEBUG: text = '{text}'")
-    logger.info(f"DEBUG: chat_type = '{chat_type}'")
+    #logger.info(f"DEBUG: bot_username = '{bot_username}'")
+    #logger.info(f"DEBUG: text = '{text}'")
+    #logger.info(f"DEBUG: chat_type = '{chat_type}'")
 
     # Проверяем доступ в приватном чате
     if chat_type == 'private':
