@@ -272,24 +272,26 @@ def check_user_limit(username: str) -> bool:
     """
     if username in banned_users:
         return False
-    
     now = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     # Очищаем устаревшие записи
     for period, queue in user_activity[username].items():
-        while queue and queue[0] <= now - timedelta(**{period: 1}):
-            queue.popleft()
-    
+        # Исправленный код для timedelta
+        time_delta_key = period + 's'  # minute -> minutes, hour -> hours, day -> days
+        if time_delta_key in ['minutes', 'hours', 'days']:
+            delta = timedelta(**{time_delta_key: 1})
+            while queue and queue[0] <= now - delta:
+                queue.popleft()
+        else:
+            logger.warning(f"⚠️ Неподдерживаемый период: {period}")
     # Проверяем лимиты
     for period, limit in MESSAGE_LIMITS.items():
         if len(user_activity[username][period]) >= limit:
             logger.warning(f"⚠️ Пользователь {username} превысил лимит {limit} сообщений за {period}")
             ban_user(username)
             return False
-    
     # Добавляем текущее сообщение
     for period in MESSAGE_LIMITS.keys():
         user_activity[username][period].append(now)
-    
     return True
 
 def ban_user(username: str):
