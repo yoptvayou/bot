@@ -1261,32 +1261,32 @@ class LocalDataSearcher:
                 issue_status_lower = issue_status.lower()
                 # Формируем базовые поля
                 response_parts = [
-                    f"<b>СН:</b> <code>{sn}</code>/n",
-                    f"<b>Тип оборудования:</b> <code>{equipment_type}</code>/n",
-                    f"<b>Модель терминала:</b> <code>{model}</code>/n",
+                    f"<b>СН:</b> <code>{sn}</code>\n",
+                    f"<b>Тип оборудования:</b> <code>{equipment_type}</code>\n",
+                    f"<b>Модель терминала:</b> <code>{model}</code>\n",
                 ]
                 # --- Логика по статусу ---
                 if status_lower == "на складе":
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>/n")
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>/n")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>\n")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>\n")
                 elif status_lower in ["не работоспособно", "выведено из эксплуатации"]:
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code> — как труп в багажнике/n")
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code> — можно разобрать на запчасти/n")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code> — как труп в багажнике\n")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code> — можно разобрать на запчасти\n")
                 elif status_lower == "зарезервировано":
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>/n")
-                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>/n")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>\n")
+                    response_parts.append(f"<b>Место на складе:</b> <code>{storage}</code>\n")
                     if issue_status_lower == "выдан":
                         # Показываем всё: место, инженера, дату
-                        response_parts.append(f"<b>Заявка:</b> <code>{request_num}</code>/n")
-                        response_parts.append(f"<b>Выдан инженеру:</b> <code>{engineer}</code>/n")
-                        response_parts.append(f"<b>Дата выдачи:</b> <code>{issue_date}</code>/n")
+                        response_parts.append(f"<b>Заявка:</b> <code>{request_num}</code>\n")
+                        response_parts.append(f"<b>Выдан инженеру:</b> <code>{engineer}</code>\n")
+                        response_parts.append(f"<b>Дата выдачи:</b> <code>{issue_date}</code>\n")
                     # Если не выдан — ничего больше не добавляем
                 else:
                     # Все остальные статусы: просто показываем статус
-                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>/n")
+                    response_parts.append(f"<b>Статус оборудования:</b> <code>{status}</code>\n", parse_mode='HTML')
                     # Можно добавить место, если нужно, но по ТЗ — не требуется
                 # Формируем итоговый текст
-                header = "ℹ️ <b>Информация о терминале</b>/n"
+                header = "ℹ️ <b>Информация о терминале</b>\n"
                 result_text = header + "" + "".join(response_parts)
                 results.append(result_text)
             wb.close()
