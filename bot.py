@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Telegram бот для поиска информации по серийным номерам в Excel файлах на Google Drive.
 Основные функции:
@@ -410,7 +409,8 @@ def get_message(message_code: str, **kwargs) -> str:
         'help': (
             "О, смотри-ка — гость на складе!\n"
             "Только не стой как лох у контейнера — говори, что надо.\n"
-            "• <code>/s 123456</code> — найти терминал по СН, если не боишься\n"
+            "• <code>/s 123456</code> — найти терминал по СН\n"
+            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"
             "• <code>/path</code> — глянуть, что у нас в папке завалялось\n"
             "• <code>/reload_lists</code> — обновить список предателей и своих\n"
             "• <code>/restart</code> — перезапуск бота\n"
@@ -421,6 +421,7 @@ def get_message(message_code: str, **kwargs) -> str:
         'invalid_number': (
             "Ты чё, братан, по пьяни печатаешь?\n"
             "СН — это типа <code>AB123456</code>, без пробелов, без носков в клавиатуре.\n"
+            "Можно указать несколько СН через запятую: <code>AB123456, CD789012</code>\n"
             "Попробуй ещё раз, а то выкину в реку."
         ),
         'search_start': (
@@ -455,8 +456,9 @@ def get_message(message_code: str, **kwargs) -> str:
             "Попробуй позже."
         ),
         'missing_number': (
-            "Укажи серийный номер после команды.\n"
-            "Пример: <code>/s AB123456</code>"
+            "Укажи серийный номер(я) после команды.\n"
+            "Пример: <code>/s AB123456</code>\n"
+            "или для нескольких: <code>/s AB123456, CD789012</code>"
         ),
         'unknown_command': (
             "Неизвестная команда.\n"
@@ -998,23 +1000,33 @@ async def handle_search(update: Update, query: str):
                 parse_mode='HTML'
             )
         return
-    # Извлекаем серийный номер
-    number = extract_number(query)
-    if not number:
+    # Извлекаем серийные номера (разделенные запятой)
+    numbers = [extract_number(num_str) for num_str in query.split(',')]
+    numbers = [num for num in numbers if num]  # Убираем пустые значения
+
+    if not numbers:
         await update.message.reply_text(
             get_message('invalid_number'),
             parse_mode='HTML'
         )
         return
-    # Отправляем промежуточное сообщение
+
+    # Отправляем промежуточное сообщение только один раз
     try:
-        await update.message.reply_text(
-            get_message('search_start', number=number),
-            parse_mode='HTML'
-        )
+        if len(numbers) == 1:
+            await update.message.reply_text(
+                get_message('search_start', number=numbers[0]),
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                f"🔍 Копаю в архивах... Где-то были эти СН: {', '.join(numbers)}...",
+                parse_mode='HTML'
+            )
     except Exception as e:
         logger.error(f"❌ Не удалось отправить статус-сообщение: {e}")
         return
+
     global LAST_FILE_ID, LAST_FILE_DATE, LAST_FILE_DRIVE_TIME, LAST_FILE_LOCAL_PATH
     # Проверка: есть ли загруженный файл
     if not LAST_FILE_ID or not LAST_FILE_LOCAL_PATH:
@@ -1078,17 +1090,28 @@ async def handle_search(update: Update, query: str):
             logger.error(f"❌ Ошибка отправки сообщения: {e_inner}")
     # Поиск по локальному файлу
     try:
-        # Используем асинхронный поиск
+        # Используем асинхронный поиск для каждого номера
         lds = LocalDataSearcher()
-        results = await lds.search_by_number_async(LAST_FILE_LOCAL_PATH, number)
-        if not results:
-            await update.message.reply_text(
-                get_message('no_terminal', number=number),
-                parse_mode='HTML'
-            )
+        all_results = []
+        for number in numbers:
+            results = await lds.search_by_number_async(LAST_FILE_LOCAL_PATH, number)
+            all_results.extend(results)
+        
+        if not all_results:
+            if len(numbers) == 1:
+                await update.message.reply_text(
+                    get_message('no_terminal', number=numbers[0]),
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    f"Терминалы с СН {', '.join(numbers)} не найдены.",
+                    parse_mode='HTML'
+                )
             return
-        # Отправляем результаты
-        for result in results:
+        
+        # Отправляем результаты по одному
+        for result in all_results:
             try:
                 if len(result) > 4096:
                     truncated = result[:4050] + "\n<i>... (обрезано)</i>"
@@ -1169,6 +1192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username.lower()
     chat_type = update.message.chat.type
     user = update.effective_user
+    
     # Проверяем доступ в приватном чате
     if chat_type == 'private':
         if not user.username or not access_manager.is_allowed(user.username.lower()):
@@ -1196,30 +1220,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
             return
+        
         # Обработка команды /s
         if text.startswith("/s"):
             query = text[2:].strip()
             if not query:
                 await update.message.reply_text(
-                    get_message('missing_number'),
-                    parse_mode='HTML'
+                get_message('missing_number'),
+                parse_mode='HTML'
                 )
-                return
-            await handle_search(update, query)
             return
-        # Обработка других команд
-        elif text.startswith('/'):
-            await update.message.reply_text(
+        await handle_search(update, query)
+        return
+
+        await handle_search(update, query)
+        return
+        
+    # Обработка других команд
+    elif text.startswith('/'):
+        await update.message.reply_text(
                 get_message('unknown_command'),
                 parse_mode='HTML'
             )
-        else:
-            # Отправляем помощь для обычных сообщений
-            await update.message.reply_text(
+    else:
+         # Отправляем помощь для обычных сообщений
+        await update.message.reply_text(
                 get_message('help'),
                 parse_mode='HTML'
-            )
+        )
         return
+    
     # В групповых чатах (group/supergroup) — только команды и упоминания
     if chat_type in ['group', 'supergroup']:
         # Проверяем лимиты DDoS
