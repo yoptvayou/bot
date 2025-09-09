@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+"""
+Telegram бот для поиска информации по серийным номерам в Excel файлах на Google Drive.
+Основные функции:
+- Поиск терминалов по серийному номеру (СН) в кэшированных Excel файлах
+- Управление доступом через черный и белый списки пользователей
+- Защита от DDoS атак
+- Обновление файлов из Google Drive
+- Команды администратора для перезапуска, обновления списков и сброса банов
+"""
+
+# --- Импорты ---
 import atexit
 import logging
 import re
@@ -19,7 +31,7 @@ import io
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-# Подавление предупреждений от openpyxl
+# --- Подавление предупреждений от openpyxl ---
 warnings.filterwarnings("ignore", message="Data Validation extension is not supported", category=UserWarning)
 
 # --- Настройка логирования ---
@@ -34,36 +46,50 @@ logger = logging.getLogger(__name__)
 # --- Конфигурация ---
 # Константа для города, используется в поиске файлов
 CITY = 'Воронеж'
+
 # Разрешения для Google Drive API
 SCOPES = ['https://www.googleapis.com/auth/drive']
+
 # Путь к директории для хранения локальных кэшированных файлов
 LOCAL_CACHE_DIR = "./local_cache"
 
 # --- Глобальные переменные ---
 # Путь к файлу учетных данных Google
 CREDENTIALS_FILE: str = ""
+
 # Токен Telegram бота
 TELEGRAM_TOKEN: str = ""
+
 # ID родительской папки в Google Drive
 PARENT_FOLDER_ID: str = ""
+
 # ID временной папки в Google Drive
 TEMP_FOLDER_ID: str = ""
+
 # ID корневой папки года в Google Drive
 ROOT_FOLDER_YEAR: str = ""
+
 # ID файла черного списка пользователей
 BLACKLIST_FILE_ID: str = ""
+
 # ID файла белого списка пользователей
 WHITELIST_FILE_ID: str = ""
+
 # Часовой пояс (по умолчанию UTC)
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", 3))  # Часы от UTC (например, 3 для MSK)
+
 # ID последнего загруженного файла
 LAST_FILE_ID: Optional[str] = None
+
 # Дата последнего файла
 LAST_FILE_DATE: Optional[datetime] = None
+
 # Время последнего изменения файла в Google Drive
 LAST_FILE_DRIVE_TIME: Optional[datetime] = None
+
 # Локальный путь к последнему файлу
 LAST_FILE_LOCAL_PATH: Optional[str] = None
+
 # Пул потоков для параллельной обработки
 executor = ThreadPoolExecutor(max_workers=4)
 
@@ -166,6 +192,7 @@ class GoogleServices:
     """
     # Статический атрибут для хранения экземпляра класса
     _instance = None
+
     def __new__(cls):
         """
         Переопределение метода __new__ для реализации паттерна Singleton.
@@ -195,6 +222,7 @@ class AccessManager:
         self.drive = drive_service
         self.blacklist = set()
         self.whitelist = set()
+
     def download_list(self, file_id: str) -> List[str]:
         """
         Скачивает список пользователей из Google Drive файла.
@@ -225,6 +253,7 @@ class AccessManager:
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки списка из файла {file_id}: {e}")
             return []
+
     def update_lists(self):
         """
         Обновляет черный и белый списки пользователей из Google Drive файлов.
@@ -241,6 +270,7 @@ class AccessManager:
             logger.info(f"✅ Загружен чёрный список: {len(self.blacklist)} пользователей")
         else:
             logger.warning("⚠️ BLACKLIST_FILE_ID не задан — чёрный список пуст")
+
     def is_allowed(self, username: str) -> bool:
         """
         Проверяет, разрешен ли доступ пользователю.
@@ -300,7 +330,6 @@ def check_user_limit(username: str) -> bool:
             # Время блокировки не указано, разблокируем
             unban_user(username)
             return True
-
     now = datetime.now(timezone.utc) + timedelta(hours=TIMEZONE_OFFSET)
     # Очищаем устаревшие записи
     for period, queue in user_activity[username].items():
@@ -708,6 +737,7 @@ class FileManager:
             drive: Сервис Google Drive
         """
         self.drive = drive
+
     def find_folder(self, parent_id: str, name: str) -> Optional[str]:
         """
         Ищет папку по имени в заданной родительской папке.
@@ -730,6 +760,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска папки '{name}': {e}")
             return None
+
     def find_file(self, folder_id: str, filename: str) -> Optional[str]:
         """
         Ищет файл по имени в заданной папке.
@@ -752,6 +783,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка поиска файла '{filename}': {e}")
             return None
+
     def get_file_modified_time(self, file_id: str) -> Optional[datetime]:
         """
         Получает время модификации файла.
@@ -772,6 +804,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения времени файла {file_id}: {e}")
             return None
+
     def download_file(self, file_id: str, local_path: str) -> bool:
         """
         Скачивает файл из Google Drive в локальную директорию.
@@ -795,6 +828,7 @@ class FileManager:
         except Exception as e:
             logger.error(f"❌ Ошибка при скачивании файла ID={file_id} в {local_path}: {e}")
             return False
+
     def list_files_in_folder(self, folder_id: str, max_results: int = 100) -> List[Dict]:
         """
         Получает список файлов и папок в заданной папке.
@@ -832,6 +866,7 @@ class LocalDataSearcher:
         loop = asyncio.get_event_loop()
         # Выполняем синхронную операцию в пуле потоков
         return await loop.run_in_executor(executor, LocalDataSearcher._search_by_number_sync, filepath, number)
+
     @staticmethod
     def _search_by_number_sync(filepath: str, number: str) -> List[str]:
         """
