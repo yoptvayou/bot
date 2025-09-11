@@ -657,7 +657,8 @@ def get_message(message_code: str, **kwargs) -> str:
             "О, смотри-ка — гость на складе!\n"
             "Только не стой как лох у контейнера — говори, что надо.\n"
             "• <code>/s 123456</code> — найти терминал по СН\n"
-            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"            
+            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"    
+            "• <code>/ping</code> — проверить время отклика бота\n"
             "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
             "\n"
             "<b>Только для админов:</b>\n"
@@ -713,7 +714,8 @@ def get_message(message_code: str, **kwargs) -> str:
             "Неизвестная команда.\n"
             "Доступные команды:\n"
             "• <code>/s 123456</code> — найти терминал по СН\n"
-            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"            
+            "• <code>/s 123456, 789012</code> — найти несколько терминалов по СН\n"  
+            "• <code>/ping</code> — проверить время отклика бота\n"
             "• <code>@Sklad_bot 123456</code> — крикни в чатике, я найду\n"
             "\n"
             "<b>Только для админов:</b>\n"
@@ -1441,7 +1443,9 @@ async def handle_search(update: Update, query: str, user=None, username=None):
         lds = LocalDataSearcher()
         all_results = []
         for number in numbers:
+            logger.info(f"Начинаю поиск для СН: {number}")
             results = await lds.search_by_number_async(LAST_FILE_LOCAL_PATH, number)
+            logger.info(f"Завершен поиск для СН: {number}, найдено результатов: {len(results)}")
             all_results.extend(results)
         if not all_results:
             if len(numbers) == 1:
@@ -1589,6 +1593,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_type in ['group', 'supergroup']:
         # Проверяем лимиты DDoS
         username = user.username if user.username else str(user.id)
+        
         if not check_user_limit(username):
             # Получаем время до разблокировки
             ban_start = user_ban_start_times.get(username)
@@ -1604,6 +1609,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(get_message('ddos_blocked'), parse_mode='HTML')
             return
+        
+        if text.lower() == "/ping":
+            await ping(update, context)
+            return
 
         # --- ИСПРАВЛЕННАЯ ЛОГИКА ---
         # 1. Обработка команды /s в группе (например, /s 123456)
@@ -1618,6 +1627,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 2. Обработка упоминания бота в группе (например, @Sklad_bot 123456)
         #    Это должно быть вне условия text.startswith("/s")
         mention_match = re.search(rf'@{re.escape(bot_username)}\s+(.+)', text, re.IGNORECASE)
+        
         if mention_match:
             query = mention_match.group(1).strip()
             if not query:
@@ -1655,6 +1665,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Все остальные сообщения в канале — игнорируем
         return
 
+# --- обработчик команды /ping ---
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /ping. Доступна всем."""
+    if not update.message:
+        return
+
+    # Получаем время отправки оригинального сообщения
+    message_time = update.message.date
+    now = datetime.now(timezone.utc)
+    
+    # Рассчитываем задержку в миллисекундах
+    ping_time_ms = (now - message_time).total_seconds() * 1000
+
+    try:
+        # Отправляем сообщение с временем пинга
+        await update.message.reply_text(
+            f" pong! 🏓\nЗадержка: {ping_time_ms:.2f} мс",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке ответа на /ping: {e}")
+
 def main():
     """
     Основная функция запуска бота.
@@ -1683,6 +1715,7 @@ def main():
 
     # Добавляем обработчики команд
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("path", show_path))
     app.add_handler(CommandHandler("reload_lists", reload_lists))
     app.add_handler(CommandHandler("restart", restart_bot))
